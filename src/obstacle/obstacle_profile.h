@@ -1,0 +1,4 @@
+#ifndef OBSTACLE_PROFILE_H
+#define OBSTACLE_PROFILE_H
+
+#endif
