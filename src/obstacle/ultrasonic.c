@@ -1,2 +1,0 @@
-/* ultrasonic */
-#include "ultrasonic.h"

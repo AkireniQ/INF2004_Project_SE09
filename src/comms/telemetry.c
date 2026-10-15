@@ -1,2 +1,0 @@
-/* telemetry */
-#include "telemetry.h"

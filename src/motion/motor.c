@@ -1,2 +1,0 @@
-/* motor */
-#include "motor.h"

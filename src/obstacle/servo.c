@@ -1,2 +1,0 @@
-/* servo */
-#include "servo.h"

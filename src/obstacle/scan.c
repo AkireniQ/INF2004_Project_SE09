@@ -1,2 +1,0 @@
-/* scan */
-#include "scan.h"

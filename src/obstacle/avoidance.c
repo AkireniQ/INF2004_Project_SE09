@@ -1,2 +1,0 @@
-/* avoidance */
-#include "avoidance.h"
