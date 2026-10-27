@@ -52,8 +52,8 @@ fixed.
 | GP1 | | (taken whenever the team builds with `CRASH_REPORT=1`) |
 | GP2 | | |
 | GP3 | | |
-| GP4 | | |
-| GP5 | | |
+| GP4 | S4 (Buddy 4) | IMU SDA (I2C0) |
+| GP5 | S4 (Buddy 4) | IMU SCL (I2C0) |
 | GP6 | | |
 | GP7 | | |
 | GP8 | | |
@@ -106,7 +106,7 @@ the drivers have no locking to stop it.
 | Peripheral | Owner subsystem | Owning task | Pins |
 |---|---|---|---|
 | UART1 | | | |
-| I2C0 | | | |
+| I2C0 | Subsystem 4 | IMU/Terrain Task | GP4 (SDA), GP5 (SCL) |
 | I2C1 | | | |
 | SPI0 | | | |
 | SPI1 | | | |

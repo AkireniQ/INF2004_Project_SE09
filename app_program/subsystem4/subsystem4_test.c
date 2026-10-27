@@ -6,6 +6,7 @@
  */
 
 #include "subsystem4.h"
+#include "b4_i2c_probe.h"
 #include "../test_report.h"
 
 #if APP_TEST
@@ -16,6 +17,8 @@ EXPORT void subsystem4_test(void)
 	UW	before;
 
 	TEST_INIT();
+
+	tm_printf((UB *)"Buddy4: TEST=1 hardware test entry reached\n");
 
 	/* S4-U01: the message buffer accepts the documented line length */
 	TEST_CHECK("S4-U01",
@@ -29,6 +32,9 @@ EXPORT void subsystem4_test(void)
 	tk_dly_tsk(3500);
 	TEST_CHECK("INT-02", s4_lines_received >= before + 2,
 		   "summary lines flow from subsystem 3 to subsystem 4");
+
+	TEST_CHECK("S4-HW01", b4_i2c_probe_start() == E_OK,
+		   "periodic I2C probe task started");
 
 	TEST_SUMMARY("subsystem4");
 }

@@ -12,6 +12,8 @@ Define a test here before running it. Test IDs never change.
 |---|---|---|---|---|---|
 | S4-U01 | message buffer max line = S4_SUMMARY_MAX | IF-03 | auto | `subsystem4_test.c` | `[TEST] S4-U01 PASS` |
 | S4-U02 | LED pauses and resumes every 6 reports | IF-05 | manual | 1. Flash normal image. 2. Watch LED and console ~20 s. | console shows "LED task paused"/"resumed"; LED stops/starts |
+| S4-U03 | Calibration, flat/tilt/ramp/hump sequences, odometry height validity, vibration, impact, and compass-rate estimate | Buddy 4 processing | host | Build and run `testing/buddy4/test_b4_algorithms.c` with the command in its header | All synthetic sequence checks pass; height remains invalid without odometry |
+| S4-U04 | Compact event encoding, sample representation, and sensor raw conversion | Buddy 4 data representation | host | Build and run `testing/buddy4/test_b4_foundation.c` with the command in its header | All representation, conversion, and event encoding checks pass |
 
 *Method:* **auto** = `TEST_CHECK` in code, result printed on the console;
 **manual** = a person observes the result (LED, scope, meter, phone app…).
