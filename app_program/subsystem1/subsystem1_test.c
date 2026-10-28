@@ -39,7 +39,18 @@ EXPORT void subsystem1_test(void)
 		TEST_CHECK("S1-U02", waiting >= 9, "LED task sleeps between ticks");
 	}
 
-	TEST_SUMMARY("subsystem1");
+    {
+        unsigned char data[2] = {1, 0};
+        unsigned opcode = 0;
+        TEST_CHECK("S1-U03", s1_command_decode(data, 1, &opcode) &&
+                   opcode == S1_CMD_START, "binary START decoded");
+        TEST_CHECK("S1-U04", !s1_command_decode(data, 2, &opcode),
+                   "extra command bytes rejected");
+        data[0] = 0x81;
+        TEST_CHECK("S1-U05", !s1_command_decode(data, 1, &opcode),
+                   "noncanonical command padding rejected");
+    }
+    TEST_SUMMARY("subsystem1");
 }
 
 #endif /* APP_TEST */

@@ -13,6 +13,10 @@
  * connected, a periodic heartbeat publish on MQTT_TOPIC. Safe to call more
  * than once -- a second call while already connecting/connected is a no-op.
  */
+/* Wi-Fi service context ONLY. Call every service iteration, including link down.
+ * wifi_up means CYW43_LINK_UP (associated with an IP address). */
+void mqtt_utk_poll(int wifi_up);
+/* Compatibility entry point; service polling is still required. */
 void mqtt_utk_start(void);
+#endif
 
-#endif /* MQTT_UTK_H */

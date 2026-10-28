@@ -1,6 +1,6 @@
 /*
  *	subsystem1.h
- *	Subsystem 1 -- LED heartbeat.  Student ID: <student ID>.
+ *	Subsystem 1 -- Wi-Fi/MQTT communication and compatible LED heartbeat.
  *
  *	This header is subsystem 1's PUBLIC interface: only what other
  *	subsystems are allowed to use.  Everything else stays LOCAL in the .c
@@ -11,6 +11,7 @@
 #define SUBSYSTEM1_H
 
 #include "../app.h"
+#include "s1_comm.h"
 
 #define S1_PRI_LED	12		/* priority band 12-13 (TEAM.md) */
 #define S1_LED_PIN	19		/* GP19: LED + 330R resistor to GND */

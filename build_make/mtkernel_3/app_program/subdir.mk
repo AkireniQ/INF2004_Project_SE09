@@ -4,6 +4,9 @@
 
 # app_program/*.c plus one level of subfolders (one per subsystem)
 TEMP_SRCS = $(wildcard ../app_program/*.c) $(wildcard ../app_program/*/*.c)
+ifeq ($(BUDDY1_DEMO),1)
+TEMP_SRCS = $(wildcard ../app_program/*.c) $(wildcard ../app_program/subsystem1/*.c) $(wildcard ../app_program/subsystem2/*.c)
+endif
 TEMP_OBJS = $(TEMP_SRCS:.c=.o)
 TEMP_DEPS = $(TEMP_SRCS:.c=.d)
 
