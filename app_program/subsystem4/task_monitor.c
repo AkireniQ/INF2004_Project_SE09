@@ -3,14 +3,14 @@
  *	Subsystem 4 -- the monitor task and its alarm handler.
  *
  *	APIs shown: tk_sta_alm, tk_stp_alm, alarm handler, tk_wai_flg,
- *	            tk_rcv_mbf, tk_loc_mtx/tk_unl_mtx, tk_ref_sem, tk_ref_mpf,
+ *	            tk_rcv_mbf, tk_loc_mtx/tk_unl_mtx, tk_ref_mbx,
  *	            tk_ref_tsk, tk_sus_tsk, tk_rsm_tsk, tk_chg_pri,
  *	            tk_get_tid, tk_get_tim
  */
 
 #include "subsystem4.h"
 #include "../subsystem1/subsystem1.h"	/* IF-05: tid_led */
-#include "../subsystem2/subsystem2.h"	/* sem_slots, mpf_samples (read only) */
+#include "../subsystem2/subsystem2.h"	/* motion status API */
 #include "../subsystem3/subsystem3.h"	/* IF-04: app_stats, mtx_stats */
 
 EXPORT UW	s4_lines_received;
@@ -44,8 +44,7 @@ EXPORT void monitor_task(INT stacd, void *exinf)
 	UB		text[S4_SUMMARY_MAX + 1];
 	INT		len;
 	APP_STATS	snap;
-	T_RSEM		rsem;
-	T_RMPF		rmpf;
+	T_RMBX		rmbx;
 	T_RTSK		rtsk;
 	SYSTIM		now;
 	UW		reports = 0;
@@ -89,13 +88,15 @@ EXPORT void monitor_task(INT stacd, void *exinf)
 		tk_unl_mtx(mtx_stats);
 
 		tk_get_tim(&now);
-		tk_ref_sem(sem_slots, &rsem);
-		tk_ref_mpf(mpf_samples, &rmpf);
+		(void)tk_ref_mbx(mbx_samples, &rmbx);
 		tm_printf((UB*)"monitor: t=%u ms  samples=%u  min=%d max=%d avg=%d"
-			  "  free slots=%d  free blocks=%d\n",
+			  "  mbx_pending=%u  s2_ready=%u s2_busy=%u s2_faults=%u\n",
 			  now.lo, snap.received, snap.min, snap.max,
 			  snap.received ? (INT)(snap.sum / (W)snap.received) : 0,
-			  rsem.semcnt, (INT)rmpf.frbcnt);
+			  (rmbx.pk_msg != NULL) ? 1U : 0U,
+			  motion_ready() ? 1U : 0U,
+			  motion_busy() ? 1U : 0U,
+			  (UW)motion_faults());
 
 		/* 4. Every few reports, pause or resume subsystem 1's LED task
 		      (IF-05) and look at it with tk_ref_tsk. */
