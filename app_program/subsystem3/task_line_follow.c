@@ -8,7 +8,7 @@
 
 /* Calibration: raw ADC on white paper and on the black line (L, C, R).
    Measure on your track; the live check below prints the raw values. */
-LOCAL const INT white_raw[3] = {  500,  500,  500 };
+LOCAL const INT white_raw[3] = { 130, 130, 130 };
 LOCAL const INT black_raw[3] = { 3200, 3200, 3200 };
 
 LOCAL INT darkness(INT raw, INT white, INT black)
@@ -116,6 +116,8 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
 
     while (1) {
         if (line_sense(&l, &c, &r) == E_OK) {
+            static INT t = 0; if (++t >= 20) { t = 0;
+            tm_printf((UB*)"[S3] dark L=%d C=%d R=%d\n", l, c, r); } 
             if (l >= JUNC_DARK && r >= JUNC_DARK) {
                 junc_ms += LINE_PERIOD_MS;
             } else {

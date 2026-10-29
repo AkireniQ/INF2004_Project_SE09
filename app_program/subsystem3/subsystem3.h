@@ -16,7 +16,7 @@
 
 /* ---- Line following: tunables ---- */
 #define S3_PRI_LINE       17
-#define S3_IR_MASK   0x1    /* TEST: left sensor only.   Use 0x4 for right only. Car: 0x5 */
+#define S3_IR_MASK   	  0x5    /* TEST: left sensor only. Use 0x4 for right only. Car: 0x5 */
 #define JUNC_DARK         600   /* both sensors must be at least this dark (0..1000) */
 #define JUNCTION_MIN_MS   30    /* ...for at least this long */
 
