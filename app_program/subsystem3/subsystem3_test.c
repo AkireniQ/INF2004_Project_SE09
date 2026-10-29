@@ -9,7 +9,6 @@
 #include "../test_report.h"
 
 #if APP_TEST
-
 LOCAL APP_STATS read_stats(void)
 {
 	APP_STATS	s;
@@ -25,7 +24,6 @@ EXPORT void subsystem3_test(void)
 	APP_STATS	before, after;
 
 	TEST_INIT();
-
 	/* INT-01 (integration, IF-01): samples from subsystem 2 arrive.
 	   At one sample per 300 ms, 2 s should bring at least 5. */
 	before = read_stats();
