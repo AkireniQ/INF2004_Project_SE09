@@ -35,8 +35,7 @@ EXPORT ER subsystem3_init(void)
 
 EXPORT ER subsystem3_start(void)
 {
-	/* Pinned to core 0 (TP_PRC1): opposite core to the producer */
-	ID tid = app_start_task(consumer_task, S3_PRI_CONSUMER, TP_PRC1,
-				"consumer_task");
-	return (tid < E_OK) ? tid : E_OK;
+    /* Pinned to core 0 (TP_PRC1); Buddy 2's motion task runs on core 1 */
+    ID tid = app_start_task(line_follow_task, S3_PRI_LINE, TP_PRC1, "line_follow");
+    return (tid < E_OK) ? tid : E_OK;
 }
