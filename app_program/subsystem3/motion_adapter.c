@@ -15,22 +15,27 @@ EXPORT void s3_motion_stop(void)
     motion_stop();
 }
 
-EXPORT BOOL s3_motion_set_wheel_levels(INT left, INT right)
+EXPORT BOOL s3_motion_set_wheel_rpm(INT left, INT right)
 {
+    LOCAL unsigned reported_fault = 0;
     LOCAL INT pl = -1, pr = -1;           /* last printed, avoids console spam from resends */
 
     if (left != pl || right != pr) {
-        tm_printf((UB*)"[MOTION] wheels L=%d R=%d\n", left, right);
+        tm_printf((UB*)"[MOTION] target RPM L=%d R=%d\n", left, right);
         pl = left; pr = right;
     }
 
     /* UNCOMMENT (step 3 of 3) : the whole block below */
-    if (motion_faults() != 0) {
-        tm_printf((UB*)"[MOTION] fault 0x%x, clearing\n", motion_faults());
-        (void)motion_clear_faults();
-        return FALSE;                     // retry next cycle after the clear is processed
+    unsigned fault = motion_faults();
+    if (fault != 0) {
+        if (fault != reported_fault) {
+            tm_printf((UB*)"[MOTION] latched fault 0x%x: inspect cause before explicit reset\n", fault);
+        }
+        reported_fault = fault;
+        return FALSE;
     }
-    if (!motion_set_wheel_levels((unsigned)left, (unsigned)right)) {
+    reported_fault = 0;
+    if (!motion_set_wheel_rpm((unsigned)left, (unsigned)right)) {
         return FALSE;                     // not ready, stop pending, or queue full
     }
     return TRUE;
@@ -74,4 +79,14 @@ EXPORT BOOL s3_motion_turn(INT dir, INT steps)
     tm_printf((UB*)"[MOTION] turn %s %d steps (%d deg)\n",
               dir < 0 ? "LEFT" : "RIGHT", steps, steps * 45);
     return run_blocking(dir < 0 ? motion_turn_left : motion_turn_right, (unsigned)steps, 8000);
+}
+/* Called by the line task, never from the time-critical motor owner. */
+EXPORT void s3_motion_diagnostics(void)
+{
+    S2_STATUS status;
+    if (!motion_get_status(&status)) { return; }
+    tm_printf((UB*)"[MOTION] actual rpm L=%u R=%u PWM L=%u%% R=%u%% faults=0x%x\n",
+              s2_get_bits(&status, 9, 9), s2_get_bits(&status, 18, 9),
+              s2_get_bits(&status, 27, 7), s2_get_bits(&status, 34, 7),
+              s2_get_bits(&status, 5, 4));
 }
