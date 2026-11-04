@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SE09 · Robot control</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <section class="connection-strip" aria-label="MQTT settings">
+      <div><span class="field-label">MQTT BROKER</span><span class="mono" id="broker-address">—</span></div>
+      <span class="strip-divider"></span>
+      <div><span class="field-label">TOPIC ROOT</span><span class="mono" id="topic-root">—</span></div>
+      <div class="stream-label" id="live-monitor"><span class="dot"></span> LIVE MONITOR</div>
+    </section>
+
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <div class="main-grid">
+      <section class="card control-card">
+        <div class="section-top"><span class="eyebrow">01 / COMMANDS</span><span class="tiny-label">BINARY MQTT</span></div>
+        <div class="ready-line"><span class="ready-dot" id="ready-dot"></span><h2 id="pico-state">Waiting for the Pico</h2></div>
+        <p class="card-description" id="pico-description">Connect to your broker and wait for a live heartbeat.</p>
+        <div class="command-buttons">
+          <button id="start" class="command start" disabled><span class="button-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 4 14 8-14 8z"/></svg></span><span class="button-word">START</span><span class="button-caption">Start line following</span></button>
+          <button id="stop" class="command stop" disabled><span class="button-icon stop-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1"/></svg></span><span class="button-word">STOP</span><span class="button-caption">Request stop</span></button>
+        </div>
+        <div class="command-feedback" id="command-feedback" aria-live="polite">No command sent from this dashboard.</div>
+        <button id="reset" class="reset-control" disabled>Reset fault</button><p class="metric-note">Reset is available only when stopped on a motor fault. It never starts the car.</p>
+        <div class="control-note"><span class="note-icon">i</span><p>START/STOP go through the vehicle controller. An ACK confirms a submitted request, not physical movement.</p></div>
+      </section>
+
+      <section class="card heartbeat-card">
+        <div class="section-top"><span class="eyebrow">02 / HEARTBEAT</span><span class="interval-label">EVERY 5s</span></div>
+        <div class="heartbeat-hero"><div><span class="field-label">LAST LIVE SIGNAL</span><div class="heartbeat-value" id="heartbeat-age">—</div></div>
+          <svg class="pulse-chart" viewBox="0 0 136 55" aria-hidden="true"><path d="M0 30 H29 L39 30 L48 12 L61 48 L73 6 L85 30 H136"/></svg>
+        </div>
+        <div class="connection-flags">
+          <div class="flag-row"><span>Wi-Fi</span><span id="wifi" class="flag">Unknown</span></div>
+          <div class="flag-row"><span>MQTT connection</span><span id="mqtt" class="flag">Unknown</span></div>
+          <div class="flag-row"><span>Command subscription</span><span id="subscribed" class="flag">Unknown</span></div>
+        </div>
+        <div class="heartbeat-footer"><span>STATUS BYTE <code id="status-hex">—</code></span><span id="drop-status">Waiting for data</span></div>
+      </section>
+    </div>
+
+    <section class="telemetry-heading"><div><span class="eyebrow">03 / VEHICLE TELEMETRY</span><h1>What the car is doing</h1></div><p>Live values from the Pico · faded values are stale</p></section>
+    <div class="telemetry-grid">
+      <section class="card telemetry-card" id="vehicle-card">
+        <div class="section-top"><h2>Vehicle controller</h2><span class="sample-status" id="vehicle-freshness">No data</span></div>
+        <div class="mission-value" id="mission-state">—</div>
+        <p class="card-description" id="mission-description">Waiting for a mission-state report.</p>
+        <div class="fault-list" id="vehicle-faults">Fault status unavailable</div>
+        <div class="controller-checks"><strong id="start-blocker">Controller diagnostics unavailable</strong><p id="start-hint">Update the Pico firmware to report why START is blocked.</p><div class="mode-row"><span>IR age <strong id="ir-age">—</strong></span><span>Line stop <strong id="line-stop">—</strong></span></div><p id="controller-detail" class="metric-note">Waiting for live controller diagnostics.</p></div>
+      </section>
+      <section class="card telemetry-card" id="motion-card">
+        <div class="section-top"><h2>Wheels &amp; motion</h2><span class="sample-status" id="motion-freshness">No data</span></div>
+        <div class="wheel-grid">
+          <div><span class="field-label">LEFT WHEEL</span><div class="metric"><span id="left-rpm">—</span><small>RPM</small></div><label for="left-pwm-bar">Drive PWM <span id="left-pwm">—</span></label><progress id="left-pwm-bar" max="100" value="0"></progress></div>
+          <div><span class="field-label">RIGHT WHEEL</span><div class="metric"><span id="right-rpm">—</span><small>RPM</small></div><label for="right-pwm-bar">Drive PWM <span id="right-pwm">—</span></label><progress id="right-pwm-bar" max="100" value="0"></progress></div>
+        </div>
+        <div class="mode-row"><span>Motor mode <strong id="motion-mode">—</strong></span><span>Global speed level <strong id="speed-level">—</strong></span></div>
+        <svg class="rpm-chart" id="rpm-chart" viewBox="0 0 400 70" role="img" aria-label="Recent left and right wheel RPM"><path id="left-rpm-path"></path><path id="right-rpm-path"></path></svg>
+        <div class="chart-key"><span>Left RPM</span><span>Right RPM</span><span>Recent 120 samples · auto scale</span></div>
+        <div class="fault-list" id="motor-faults">Motor fault status unavailable</div>
+        <p class="metric-note">Bounded-move progress: L <span id="left-progress">—</span> / R <span id="right-progress">—</span> counts. These are not total distance or lifetime encoder counts.</p>
+      </section>
+      <section class="card telemetry-card" id="line-card">
+        <div class="section-top"><h2>Line sensors &amp; barcode</h2><span class="sample-status" id="line-freshness">No data</span></div>
+        <div class="sensor-grid"><div><span class="sensor-light" id="left-ir-light"></span><span>Left IR</span><strong id="left-ir">—</strong></div><div><span class="sensor-light" id="right-ir-light"></span><span>Right IR</span><strong id="right-ir">—</strong></div></div>
+        <div class="mode-row"><span>Barcode <strong id="barcode">—</strong></span><span>Centre flag <strong id="centre-ir">—</strong></span></div>
+        <p class="metric-note">Your current firmware uses two tracking sensors. It reports black-detection flags, not raw analogue readings. Barcode decoding is currently disabled.</p>
+      </section>
+      <section class="card telemetry-card" id="terrain-card">
+        <div class="section-top"><h2>Terrain &amp; hump</h2><span class="sample-status" id="terrain-freshness">No data</span></div>
+        <span class="field-label">REPORTED HEIGHT</span><div class="metric"><span id="terrain-height">—</span><small>mm</small></div>
+        <div class="mode-row"><span>Terrain phase <strong id="terrain-phase">—</strong></span></div>
+        <p class="metric-note">Appears when Buddy 4 submits a valid height measurement. Missing telemetry is not a measured height of zero.</p>
+      </section>
+      <section class="card telemetry-card" id="obstacle-card">
+        <div class="section-top"><h2>Obstacle scan</h2><span class="sample-status" id="obstacle-freshness">No data</span></div>
+        <div class="obstacle-grid"><div><span class="field-label">NEAREST</span><strong id="obstacle-nearest">—</strong></div><div><span class="field-label">WIDTH</span><strong id="obstacle-width">—</strong></div><div><span class="field-label">LEFT CLEARANCE</span><strong id="obstacle-left">—</strong></div><div><span class="field-label">RIGHT CLEARANCE</span><strong id="obstacle-right">—</strong></div></div>
+        <p class="metric-note">Appears when Buddy 5 submits a valid scan. A scan alone does not confirm that obstacle avoidance is running.</p>
+      </section>
+      <section class="card event-card"><div class="section-top"><h2>Connection &amp; mission events</h2><span class="tiny-label">LATEST 40</span></div><ol id="events" class="events"><li>Waiting for events.</li></ol></section>
+    </div>
+    <p class="page-note">Heartbeat confirms connection, mission state reports controller intent, and wheel RPM reports measured motion. Junction-stop behaviour remains enabled; barcode turns and obstacle bypass are not implemented in the current firmware.</p>
+  </main>
+</body>
+</html>
