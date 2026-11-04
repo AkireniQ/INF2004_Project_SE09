@@ -50,7 +50,7 @@ static int send_frame(ID buffer, unsigned route, const unsigned char *data,
 int mqtt_bridge_send(unsigned route, const unsigned char *data, unsigned length)
 {
     if (!mqtt_bridge_ready()) { return E_OBJ; }
-    if (route >= MQTT_ROUTE_COMMAND) { return E_PAR; }
+    if (route >= MQTT_ROUTE_COUNT || route == MQTT_ROUTE_COMMAND) { return E_PAR; }
     return send_frame(tx_buffer, route, data, length);
 }
 

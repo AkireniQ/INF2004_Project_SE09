@@ -54,6 +54,7 @@
  */
 
 #include "app.h"
+#include "vehicle_controller/vehicle_controller.h"
 
 /*
  * Create and start one task (declared in app.h for every subsystem).
@@ -116,7 +117,12 @@ EXPORT INT usermain(void)
 #endif
 	CHECK(subsystem5_init(), "subsystem5_init");
 
+	ER vc_er = vehicle_init();
+	if (vc_er < E_OK) { CHECK(vc_er, "vehicle_init"); tk_slp_tsk(TMO_FEVR); return 0; }
+
 	/* Phase 2: every subsystem starts its tasks */
+	vc_er = vehicle_start_task();
+	if (vc_er < E_OK) { CHECK(vc_er, "vehicle_start_task"); tk_slp_tsk(TMO_FEVR); return 0; }
 	CHECK(subsystem1_start(), "subsystem1_start");
 	CHECK(subsystem2_start(), "subsystem2_start");
 	CHECK(subsystem3_start(), "subsystem3_start");

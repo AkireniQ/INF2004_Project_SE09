@@ -5,6 +5,7 @@
  * line_follow_task() runs both every LINE_PERIOD_MS and drives Motion Control
  */
 #include "subsystem3.h"
+#include "../vehicle_controller/vehicle_controller.h"
 
 
 /* Calibration: raw ADC on white paper and on the black line (L, C, R).
@@ -136,26 +137,8 @@ EXPORT void line_decide(INT l, INT c, INT r, LF_STATE *st, LF_CMD *cmd)
 }
 
 
-/* Send a command to Motion Control, only when it changes */
-LOCAL void apply(const LF_CMD *cmd, BOOL *moving, INT *last_l, INT *last_r, INT *age_ms)
-{
-    *age_ms += LINE_PERIOD_MS;
-    if (cmd->stop) {
-        if (*moving) { s3_motion_stop(); *moving = FALSE; *last_l = -1; *last_r = -1; }
-        return;
-    }
-    if (cmd->left != *last_l || cmd->right != *last_r || *age_ms >= S3_RESEND_MS) {
-        if (s3_motion_set_wheel_rpm(cmd->left, cmd->right)) {
-            *moving = TRUE;
-            *last_l = cmd->left;
-            *last_r = cmd->right;
-            *age_ms = 0;
-        } else {
-            *last_l = -1; *last_r = -1;   /* rejected: try again next cycle */
-        }
-    }
-}
-
+/* The original line_decide() above is unchanged. The controller owns motors;
+ * the line task submits copied recommendations at the original cadence. */
 
 typedef enum { ACT_NONE, ACT_STRAIGHT, ACT_LEFT, ACT_RIGHT, ACT_UTURN } ROUTE;
 
@@ -215,8 +198,8 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
     LF_CMD   cmd;
     T_CCYC   cyc = {0};
     INT  l, c, r, d, tick = 0, diag_ms = 0;
-    INT  last_l = -1, last_r = -1, age_ms = 0, junc_ms = 0, fl = 0, fr = 0;
-    BOOL moving = FALSE, on_junction = FALSE, halted = FALSE;
+    INT  junc_ms = 0, fl = 0, fr = 0;
+    BOOL on_junction = FALSE, halted = FALSE;
     char stored = 0, got;
     ROUTE act;
 
@@ -230,6 +213,7 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
     cyc.cycphs = S3_TICK_MS;
     if (tk_cre_cyc(&cyc) < E_OK) {
         tm_printf((UB*)"[S3] tick cyclic creation failed\n");
+        vehicle_invalidate_line();
         tk_ext_tsk();
         return;
     }
@@ -255,15 +239,14 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
         // }
 
 
-        if (halted) { continue; }
         if (++tick < LINE_EVERY_N) { continue; }
         tick = 0;
 
 
         /* every LINE_EVERY_N-th tick (= LINE_PERIOD_MS): line following */
         if (line_sense(&l, &c, &r) != E_OK) {
-            s3_motion_stop();
-            moving = FALSE; last_l = -1; last_r = -1; age_ms = 0;
+            vehicle_invalidate_line();
+            st = (LF_STATE){0};
             continue;
         }
         /* Use current readings: smoothing both sides delayed curve response. */
@@ -277,7 +260,7 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
 
         //COMMENT
         /* TEST: junction check without the barcode guard */
-        if (l >= JUNC_DARK && r >= JUNC_DARK) { junc_ms += LINE_PERIOD_MS; }
+        if (!halted && vehicle_is_following() && l >= JUNC_DARK && r >= JUNC_DARK) { junc_ms += LINE_PERIOD_MS; }
         else { junc_ms = 0; on_junction = FALSE; }
 
 
@@ -288,9 +271,7 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
             //COMMENT
             /* TEST: stop at the first cross junction and stay stopped */
             tm_printf((UB*)"[S3] JUNCTION (L=%d R=%d): STOP\n", l, r);
-            s3_motion_stop();
             halted = TRUE;
-            continue;
 
 
             //UNCOMMENT
@@ -322,7 +303,8 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
 
 
         line_decide(l, c, r, &st, &cmd);
-        apply(&cmd, &moving, &last_l, &last_r, &age_ms);
+        if (halted) { cmd = (LF_CMD){0, 0, TRUE}; }
+        vehicle_submit_line(l, c, r, cmd.left, cmd.right, cmd.stop, 0);
         diag_ms += LINE_PERIOD_MS;
         if (diag_ms >= 500) {
             diag_ms = 0;

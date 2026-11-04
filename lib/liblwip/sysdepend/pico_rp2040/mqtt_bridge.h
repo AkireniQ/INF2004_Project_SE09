@@ -6,11 +6,11 @@
 #define MQTT_BRIDGE_FRAME_MAX (1u + MQTT_BRIDGE_PAYLOAD_MAX)
 #define MQTT_BRIDGE_QUEUE_BYTES 256u
 /* Topic IDs are the minimum-bit representation of the fixed topic dictionary.
- * The first byte uses three bits, bits 3..7 must be zero. */
+ * The first byte uses four bits for nine internal route IDs. */
 enum {
     MQTT_ROUTE_STATUS, MQTT_ROUTE_MOTION, MQTT_ROUTE_LINE,
     MQTT_ROUTE_TERRAIN, MQTT_ROUTE_OBSTACLE, MQTT_ROUTE_VEHICLE,
-    MQTT_ROUTE_ACK, MQTT_ROUTE_COMMAND,
+    MQTT_ROUTE_ACK, MQTT_ROUTE_COMMAND, MQTT_ROUTE_CONTROLLER,
     MQTT_ROUTE_COUNT
 };
 #define MQTT_LINK_WIFI 1u
