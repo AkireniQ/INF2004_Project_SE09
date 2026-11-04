@@ -22,6 +22,7 @@ static bool execute(uint16_t word)
     case S2_DEC:return s2_core_decrease_speed();
     case S2_FORWARD:return s2_core_forward();
     case S2_BACKWARD:return s2_core_backward();
+    case S2_WHEEL_RPM:return s2_core_set_wheel_rpm((arg&63u)*2u,((arg>>6)&63u)*2u);
     case S2_WHEELS:return s2_core_set_wheel_levels(arg&7u,(arg>>3)&7u);
     case S2_MOVE_F:return s2_core_move_forward_mm(arg);
     case S2_MOVE_B:return s2_core_move_backward_mm(arg);
@@ -80,7 +81,7 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
                can be older than a command enqueued while the owner was blocked. */
             uint32_t received=s2_now_ms();age=(uint32_t)(received-issued);
             bool fresh=age<=S2_COMMAND_TTL_MS;
-            bool starts=(op==S2_FORWARD||op==S2_BACKWARD||op==S2_WHEELS||op==S2_MOVE_F||op==S2_MOVE_B||op==S2_LEFT||op==S2_RIGHT);
+            bool starts=(op==S2_FORWARD||op==S2_BACKWARD||op==S2_WHEELS||op==S2_WHEEL_RPM||op==S2_MOVE_F||op==S2_MOVE_B||op==S2_LEFT||op==S2_RIGHT);
             bool settled=!starts || s2_core_busy() || !settling_active;
             /* Requests during settling are rejected, never silently replayed later. */
             if(!fresh)reason=S2_REPLY_STALE;

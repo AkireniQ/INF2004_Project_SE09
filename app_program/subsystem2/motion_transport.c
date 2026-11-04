@@ -16,7 +16,7 @@ static void unlock_transport(void)
     ER er=tk_unl_mtx(transport_lock);
     if(er<E_OK) {tm_printf((UB*)"S2 mutex unlock failed: %d\n",er);for(;;)tk_slp_tsk(TMO_FEVR);}
 }
-/* Four opcode bits and eleven union-argument bits, one unused container bit.
+/* Four opcode bits and twelve union-argument bits (fine RPM uses all 16 bits).
    Each arg variant only uses its required low bits: speed3,wheels6,angle3,distance11. */
 static uint16_t commands[8];
 /* Native RTOS timestamps are transport bookkeeping, not motion payload fields. */
@@ -59,6 +59,12 @@ bool motion_decrease_speed(void){return submit(S2_DEC,0);}
 bool motion_forward(void){return submit(S2_FORWARD,0);}
 bool motion_backward(void){return submit(S2_BACKWARD,0);}
 bool motion_set_wheel_levels(unsigned l,unsigned r){if(l>4||r>4)return false;if(!l&&!r)return motion_set_speed(0);return submit(S2_WHEELS,l|(r<<3));}
+bool motion_set_wheel_rpm(unsigned l,unsigned r)
+{
+    if(l>126u || r>126u || (l&1u) || (r&1u))return false;
+    if(!l&&!r){motion_stop();return true;}
+    return submit(S2_WHEEL_RPM,(l/2u)|((r/2u)<<6));
+}
 bool motion_move_forward_mm(unsigned n){return n<=MAX_DISTANCE_MM && (n?submit(S2_MOVE_F,n):motion_ready());}
 bool motion_move_backward_mm(unsigned n){return n<=MAX_DISTANCE_MM && (n?submit(S2_MOVE_B,n):motion_ready());}
 bool motion_turn_left(unsigned n){return n>=1&&n<=8&&submit(S2_LEFT,n-1);}
