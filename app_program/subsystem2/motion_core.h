@@ -12,6 +12,7 @@ bool s2_core_decrease_speed(void);
 bool s2_core_forward(void);
 bool s2_core_backward(void);
 bool s2_core_set_wheel_levels(unsigned left, unsigned right);
+bool s2_core_set_wheel_rpm(unsigned left, unsigned right);
 bool s2_core_move_forward_mm(unsigned mm);
 bool s2_core_move_backward_mm(unsigned mm);
 /* steps 1..8 means 45..360 degrees. No angle field is retained after conversion. */
