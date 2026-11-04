@@ -1,29 +1,27 @@
-/*
- *	subsystem5.c
- *	Subsystem 5 -- <name>.  EMPTY TEMPLATE.
- *
- *	subsystem5_init():  create this subsystem's kernel objects
- *	                    (semaphores, mailboxes, ...).  Do not start
- *	                    tasks here.
- *	subsystem5_start(): create and start this subsystem's tasks, e.g.
- *	    ID tid = app_start_task(my_task, S5_PRI_MAIN, 0, "my_task");
- *	    return (tid < E_OK) ? tid : E_OK;
- *
- *	Drivers for this subsystem's hardware go in this folder as
- *	drv_<name>.c / drv_<name>.h, called only from the task that owns
- *	the peripheral (TEAM.md section 3).
- *
- *	Record every pin, task, object and interface in TEAM.md.
- */
+LOCAL volatile UW s5_faults;    /* shared bitmask */
 
-#include "subsystem5.h"
-
-EXPORT ER subsystem5_init(void)
+LOCAL void s5_set_fault(UW bit)
 {
-	return E_OK;
+	UINT intsts;
+	DI(intsts);          /* protect the read-modify-write */
+	s5_faults |= bit;
+	EI(intsts);
 }
 
-EXPORT ER subsystem5_start(void)
+LOCAL void s5_task(INT stacd, void *exinf)
 {
-	return E_OK;
+	UW cm, profile; INT r;
+	drv_us_init(S5_TRIG_PIN, S5_ECHO_PIN);
+
+	while (1) {
+		r = drv_us_read_cm(S5_TRIG_PIN, S5_ECHO_PIN, &cm);
+		if (r == US_OK) {
+			profile = S5_PACK(cm, 0, 0, 0, 1);   /* angle/width/clearance later */
+			tm_printf((UB*)"S5 profile=0x%08x dist=%d cm\n", profile, (INT)S5_DIST(profile));
+		} else {
+			s5_set_fault(r == US_ERR_NOSTART ? S5_FAULT_NOECHO : S5_FAULT_STUCK);
+			tm_printf((UB*)"S5 fault, mask=0x%x\n", (UINT)s5_faults);
+		}
+		tk_dly_tsk(100);
+	}
 }
