@@ -23,7 +23,7 @@ unsigned s1_wire_get(const unsigned char *bytes, unsigned bit, unsigned count)
 
 int s1_command_decode(const unsigned char *data, unsigned length, unsigned *opcode)
 {
-    if (data == 0 || opcode == 0 || length != 1u || data[0] > 1u) { return 0; }
+    if (data == 0 || opcode == 0 || length != 1u || data[0] > S1_CMD_RESET) { return 0; }
     *opcode = data[0];
     return 1;
 }

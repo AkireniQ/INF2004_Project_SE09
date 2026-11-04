@@ -3,14 +3,15 @@
 #define S1_WIRE_H
 #define S1_CMD_STOP 0u
 #define S1_CMD_START 1u
+#define S1_CMD_RESET 2u
 #define S1_FAULT_MOTOR 1u
 #define S1_FAULT_ENCODER 2u
 #define S1_FAULT_IMU 4u
 #define S1_FAULT_NO_ECHO 8u
 #define S1_FAULT_WIFI 16u
 
-/* v2 commands: one application bit in one octet. 00 STOP, 01 START.
- * Exactly one byte, with bits 1..7 zero. No text payloads. */
+/* v2 commands: one octet. 00 STOP, 01 START, 02 stopped-only RESET.
+ * Exactly one byte; values above2 are invalid. No text payloads. */
 int s1_command_decode(const unsigned char *data, unsigned length, unsigned *opcode);
 void s1_wire_put(unsigned char *bytes, unsigned bit, unsigned count, unsigned value);
 unsigned s1_wire_get(const unsigned char *bytes, unsigned bit, unsigned count);

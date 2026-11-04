@@ -59,8 +59,10 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
         ER wake=tk_slp_tsk(TMO_FEVR);
         if(wake<E_OK)continue;
         /* Discard already accumulated wakeups; never run catch-up PID bursts.
-           A missed release while moving still trips the unchanged 11ms guard. */
+           A missed 20 ms release while moving still trips the 15 ms guard. */
         (void)tk_can_wup(owner_id);
+        /* Run the deadline-critical update before cross-core transport locks. */
+        s2_core_service();
         uint32_t now=s2_now_ms();
         bool ready=(uint32_t)(now-boot)>=S2_STARTUP_DELAY_MS;
         bool zero=false;
@@ -99,7 +101,6 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
             }
         }
         if(!ready)s2_core_stop();
-        s2_core_service();
         S2_STATUS snapshot;s2_core_snapshot(&snapshot);
         now=s2_now_ms();
         if(s2_get_bits(&snapshot,0,2)==1 && (uint32_t)(now-last_command)>S2_COMMAND_TIMEOUT_MS){
