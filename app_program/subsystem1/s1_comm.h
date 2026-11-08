@@ -10,6 +10,8 @@ ER s1_publish_line(unsigned ir_bits, unsigned barcode); /* 0 none, 1..4 A..D */
 ER s1_publish_terrain(unsigned height_mm, unsigned phase); /* phases 0..5 */
 ER s1_publish_obstacle(unsigned nearest_mm, unsigned width_mm,
                        unsigned left_mm, unsigned right_mm);
+ER s1_publish_motion(void);
+void s1_publish_telemetry(void);
 unsigned s1_connection_status(void); /* bits: WiFi, broker, subscribed, TX drop, RX drop */
 void s1_comm_task(INT stacd, void *exinf);
 #endif

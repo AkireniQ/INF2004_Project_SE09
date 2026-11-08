@@ -39,7 +39,7 @@ EXPORT ER subsystem1_start(void)
 	}
 	#if TM_MQTT
     {
-        ID tid = app_start_task((FP)s1_comm_task, 13, 0, "s1_comm");
+        ID tid = app_start_task((FP)s1_comm_task, 13, TP_PRC1, "s1_comm");
         if (tid < E_OK) { return tid; }
     }
 #endif

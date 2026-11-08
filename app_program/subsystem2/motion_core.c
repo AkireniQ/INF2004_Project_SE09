@@ -12,19 +12,19 @@ static volatile uint16_t encoder_word;
 static struct {
     unsigned mode:2;
     unsigned level:3;
-    unsigned left_level:3;
-    unsigned right_level:3;
+    unsigned left_rpm:8;
+    unsigned right_rpm:8;
     unsigned left_reverse:1;
     unsigned right_reverse:1;
     unsigned faults:4;
 } state;
-/* Explicit initial bounds: RPM 0..300 (9); errors -240..240 (9 signed);
+/* Explicit initial bounds: RPM 0..300 (9); errors -300..240 (10 signed);
    integral -2000..2000 (12 signed); PWM 0..100 (7);
    bounded movement target/progress 0..8191 (13). */
 static struct wheel_data {
     unsigned rpm:9;
     signed integral:12;
-    signed previous_error:9;
+    signed previous_error:10;
     unsigned duty:7;
     unsigned target:13;
     unsigned progress:13;
@@ -70,6 +70,22 @@ static void drive(unsigned w, unsigned percent)
     if (percent) s2_hw_pwm_write(reverse?b:a, (uint16_t)(percent*10u));
     wheels[w].duty=percent;
 }
+/* Robo Pico vendor demo uses throttle=0 (both inputs high) for braking.
+ * Apply only to a zero-target wheel during forward velocity steering.
+ * Full stops/faults still use the established coast path in s2_core_stop.
+ */
+static void hold_pivot_wheel(unsigned w)
+{
+#if S2_BRAKE_ZERO_WHEEL
+    unsigned a=w?RIGHT_IN_A:LEFT_IN_A, b=w?RIGHT_IN_B:LEFT_IN_B;
+    /* TOP=999, CC=1000 holds both inputs continuously high. */
+    s2_hw_pwm_write(a,1000);
+    s2_hw_pwm_write(b,1000);
+    wheels[w].duty=0; /* zero propulsion duty; electrical brake is active */
+#else
+    drive(w,0);
+#endif
+}
 void s2_core_stop(void)
 {
     drive(0,0); drive(1,0);
@@ -100,7 +116,7 @@ static bool start(unsigned mode, bool lr, bool rr, unsigned lt, unsigned rt)
     /* Stop -> 200 ms settle -> service -> new command. Caller must provide settling. */
     drain_encoder();
     state.mode=mode; state.left_reverse=lr; state.right_reverse=rr;
-    state.left_level=state.right_level=state.level;
+    state.left_rpm=state.right_rpm=state.level*MAX_RPM/4u;
     for(unsigned i=0;i<2;i++) {
         wheels[i].integral=0; wheels[i].previous_error=0;
         wheels[i].target=0; wheels[i].progress=0; wheels[i].duty=0;
@@ -115,7 +131,7 @@ bool s2_core_set_speed(unsigned level)
     if(level>4 || state.faults) return false;
     state.level=level;
     if(!level) s2_core_stop();
-    else if(state.mode==VELOCITY) state.left_level=state.right_level=level;
+    else if(state.mode==VELOCITY) state.left_rpm=state.right_rpm=level*MAX_RPM/4u;
     /* During a bounded move, changes take effect on the NEXT command. */
     return true;
 }
@@ -125,7 +141,12 @@ bool s2_core_forward(void) { return start(VELOCITY,false,false,0,0); }
 bool s2_core_backward(void) { return start(VELOCITY,true,true,0,0); }
 bool s2_core_set_wheel_levels(unsigned left,unsigned right)
 {
-    if(left>4 || right>4 || state.faults) return false;
+    if(left>4 || right>4) return false;
+    return s2_core_set_wheel_rpm(left*MAX_RPM/4u,right*MAX_RPM/4u);
+}
+bool s2_core_set_wheel_rpm(unsigned left,unsigned right)
+{
+    if(left>MAX_RPM || right>MAX_RPM || state.faults) return false;
     if(!left && !right) { s2_core_stop(); return true; }
     if(state.mode!=IDLE && state.mode!=VELOCITY) return false;
     if(state.mode==VELOCITY && (state.left_reverse || state.right_reverse)) return false;
@@ -136,7 +157,9 @@ bool s2_core_set_wheel_levels(unsigned left,unsigned right)
         state.level=selected;
         if(!accepted) return false;
     }
-    state.left_level=left; state.right_level=right;
+    if (!state.left_rpm && left) { wheels[0].integral=0; wheels[0].previous_error=0; }
+    if (!state.right_rpm && right) { wheels[1].integral=0; wheels[1].previous_error=0; }
+    state.left_rpm=left; state.right_rpm=right;
     return true;
 }
 static unsigned distance_counts(unsigned mm,unsigned w)
@@ -181,7 +204,8 @@ static unsigned pid(unsigned w,unsigned target)
     int derivative=error-wheels[w].previous_error;
     int integral=clamp(wheels[w].integral+error,-INTEGRAL_LIMIT,INTEGRAL_LIMIT);
     int base=(int)(target*100u/MAX_RPM);
-    int output=base+error*KP_NUM/KP_DEN+integral/KI_DEN+derivative*KD_NUM/KD_DEN;
+    int ki_den=target<60u?KI_LOW_SPEED_DEN:KI_DEN;
+    int output=base+error*KP_NUM/KP_DEN+integral/ki_den+derivative*KD_NUM/KD_DEN;
     /* Conditional integration avoids pushing further into output saturation. */
     if(!((output>100 && error>0)||(output<0 && error<0))) wheels[w].integral=integral;
     wheels[w].previous_error=error;
@@ -213,9 +237,15 @@ void s2_core_service(void)
             wheels[w].progress=p;
             if(p>=wheels[w].target) { drive(w,0); continue; }
         }
-        unsigned level=w?state.right_level:state.left_level;
-        if(!level) { drive(w,0); wheels[w].integral=0; stall_start[w]=0; continue; }
-        unsigned target=level*MAX_RPM/4u;
+        unsigned target=w?state.right_rpm:state.left_rpm;
+        if(!target) {
+            if(state.mode==VELOCITY && (state.left_rpm || state.right_rpm)) {
+                hold_pivot_wheel(w);
+            } else { drive(w,0); }
+            wheels[w].integral=0; wheels[w].previous_error=0;
+            stall_start[w]=0;
+            continue;
+        }
         /* Reduce speed near a distance/turn target; coast overshoot still needs calibration. */
         if(state.mode!=VELOCITY && wheels[w].target-wheels[w].progress<80 && target>60) target=60;
         unsigned duty=pid(w,target);

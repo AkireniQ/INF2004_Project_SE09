@@ -15,17 +15,17 @@
 #define RETRY_MS 3000u
 #define HEARTBEAT_MS 5000u
 #define PENDING_MS 5000u
-#define TOPIC_MAX 64u
+#define TOPIC_MAX 80u
 #define TX_BUDGET 2u
 
 static const char * const topics[MQTT_ROUTE_COUNT] = {
     MQTT_TOPIC_ROOT "/status", MQTT_TOPIC_ROOT "/motion",
     MQTT_TOPIC_ROOT "/line", MQTT_TOPIC_ROOT "/terrain",
     MQTT_TOPIC_ROOT "/obstacle", MQTT_TOPIC_ROOT "/vehicle",
-    MQTT_TOPIC_ROOT "/ack", MQTT_TOPIC_ROOT "/command"
+    MQTT_TOPIC_ROOT "/ack", MQTT_TOPIC_ROOT "/command", MQTT_TOPIC_ROOT "/controller"
 };
 /* Fail compilation rather than silently truncate a configured topic. */
-typedef char topic_must_fit[(sizeof(MQTT_TOPIC_ROOT "/obstacle") <= TOPIC_MAX) ? 1 : -1];
+typedef char topic_must_fit[(sizeof(MQTT_TOPIC_ROOT "/controller") <= TOPIC_MAX) ? 1 : -1];
 static mqtt_client_t *client;
 static ip_addr_t broker;
 static u8_t connecting;
@@ -192,7 +192,7 @@ void mqtt_utk_poll(int wifi_up)
             if (pending_size < 0) { pending_size = 0; break; }
         }
         if (pending_size < 2 || pending_size > (int)MQTT_BRIDGE_FRAME_MAX ||
-            pending[0] >= MQTT_ROUTE_COMMAND || (flags & MQTT_LINK_BROKER) == 0u ||
+            (pending[0] >= MQTT_ROUTE_COUNT || pending[0] == MQTT_ROUTE_COMMAND) || (flags & MQTT_LINK_BROKER) == 0u ||
             due(now, pending_at + PENDING_MS)) {
             flags |= MQTT_LINK_TX_DROP;
             pending_size = 0;
