@@ -6,7 +6,9 @@
 #include "b4_i2c_probe.h"
 #include "b4_lsm303dlhc.h"
 #include "b4_processor.h"
+#include "b4_odometry.h"
 #include "subsystem4.h"
+#include "../subsystem2/subsystem2.h"
 
 #if APP_TEST
 
@@ -335,10 +337,11 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 					  (unsigned int)record.processed.motion_class,
 					  (unsigned int)record.processed.terrain_state);
 				if (record.processed.height_valid != 0U) {
-					tm_printf((UB *)" peak_height_est=%d mm",
+					tm_printf((UB *)" approx_height_est_imu_wheel_odometry=%d mm",
 						  (int)record.processed.peak_height_mm);
 				} else {
-					tm_printf((UB *)" peak_height_est=unavailable");
+					tm_printf((UB *)" peak_height_est=unavailable "
+						  "(approx IMU+wheel odometry; S2_STATUS lacks direction)");
 				}
 				if (record.processed.turn_rate_valid != 0U) {
 					tm_printf((UB *)" turn_rate_est=%d mdps\n",
@@ -427,6 +430,7 @@ EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
 	uint32_t loop_start_previous_us = 0U;
 	uint32_t max_loop_period_us = 0U;
 	uint32_t tick_wait_us = 0U;
+	uint32_t odometry_previous_timestamp_ms = 0U;
 
 	(void)stacd;
 	(void)exinf;
@@ -482,9 +486,32 @@ EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
 		if ((record.read_status == B4_LSM303DLHC_STATUS_OK) &&
 		    (record.sample.flags != 0U)) {
 			B4_PROCESSOR_OUTPUT processed = {0};
+			S2_STATUS motion_status;
+			uint8_t speed_valid = 0U;
+			int32_t speed_mm_s = 0;
+			uint32_t elapsed_ms = 0U;
+
+			if (odometry_previous_timestamp_ms != 0U) {
+				elapsed_ms = record.sample.timestamp_ms -
+					odometry_previous_timestamp_ms;
+			}
+			odometry_previous_timestamp_ms = record.sample.timestamp_ms;
+
+			if (motion_get_status(&motion_status)) {
+				uint16_t mode = (uint16_t)s2_get_bits(&motion_status, 0U, 2U);
+				uint16_t faults = (uint16_t)s2_get_bits(&motion_status, 5U, 4U);
+				uint16_t left_rpm = (uint16_t)s2_get_bits(&motion_status, 9U, 9U);
+				uint16_t right_rpm = (uint16_t)s2_get_bits(&motion_status, 18U, 9U);
+				B4_ODOMETRY_STATUS odometry_status = b4_odometry_validate(
+					mode, faults, left_rpm, right_rpm,
+					0U, elapsed_ms, &speed_mm_s);
+				if (odometry_status == B4_ODOMETRY_VALID) {
+					speed_valid = 1U;
+				}
+			}
 
 			(void)b4_processor_update(&processor, &record.sample,
-						  0U, 0,
+						  speed_valid, speed_mm_s,
 						  &processed);
 			b4_probe_store_processed(&record.processed, &processed);
 		}

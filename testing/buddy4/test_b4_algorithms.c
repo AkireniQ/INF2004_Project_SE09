@@ -6,6 +6,7 @@
  *     app_program/subsystem4/b4_event.c \
  *     app_program/subsystem4/b4_calibration.c \
  *     app_program/subsystem4/b4_processor.c \
+ *     app_program/subsystem4/b4_odometry.c \
  *     testing/buddy4/test_b4_algorithms.c -o /tmp/test_b4_algorithms
  */
 
@@ -13,6 +14,7 @@
 #include <string.h>
 
 #include "../../app_program/subsystem4/b4_processor.h"
+#include "../../app_program/subsystem4/b4_odometry.h"
 
 static int test_failures;
 
@@ -380,6 +382,28 @@ static void test_calibration_rejects_movement(void)
 	CHECK(calibrator.sample_count == 0U);
 }
 
+static void test_odometry_validity(void)
+{
+	int32_t speed_mm_s = 0;
+
+	CHECK(b4_odometry_validate(1U, 0U, 100U, 100U, 1U, 10U,
+				   &speed_mm_s) == B4_ODOMETRY_VALID);
+	CHECK(speed_mm_s > 300 && speed_mm_s < 400);
+	CHECK(b4_odometry_validate(1U, 0U, 100U, 100U, 0U, 10U,
+				   &speed_mm_s) ==
+		      B4_ODOMETRY_DIRECTION_UNKNOWN);
+	CHECK(b4_odometry_validate(1U, 0U, 100U, 150U, 1U, 10U,
+				   &speed_mm_s) == B4_ODOMETRY_TURNING);
+	CHECK(b4_odometry_validate(1U, 0U, 0U, 0U, 1U, 10U,
+				   &speed_mm_s) == B4_ODOMETRY_RPM_INVALID);
+	CHECK(b4_odometry_validate(1U, 1U, 100U, 100U, 1U, 10U,
+				   &speed_mm_s) == B4_ODOMETRY_FAULT);
+	CHECK(b4_odometry_validate(1U, 0U, 100U, 100U, 1U, 101U,
+				   &speed_mm_s) == B4_ODOMETRY_STALE);
+	CHECK(b4_odometry_validate(2U, 0U, 100U, 100U, 1U, 10U,
+				   &speed_mm_s) == B4_ODOMETRY_NOT_FORWARD);
+}
+
 int main(void)
 {
 	test_calibration_and_flat();
@@ -391,6 +415,7 @@ int main(void)
 	test_vibration_and_collision();
 	test_compass_turn_estimate();
 	test_calibration_rejects_movement();
+	test_odometry_validity();
 
 	if (test_failures != 0) {
 		(void)printf("%d Buddy 4 algorithm check(s) failed\n",
