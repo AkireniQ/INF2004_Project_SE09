@@ -20,11 +20,12 @@
 #define B4_EVENT_HUMP_DETECTED        UINT8_C(0x03)
 #define B4_EVENT_HUMP_PEAK_HEIGHT     UINT8_C(0x04)
 #define B4_EVENT_MOTION_CLASS         UINT8_C(0x05)
-#define B4_EVENT_COLLISION            UINT8_C(0x06)
+#define B4_EVENT_RESERVED_06          UINT8_C(0x06)
 #define B4_EVENT_TURN_RATE             UINT8_C(0x07)
 #define B4_EVENT_CALIBRATION_READY     UINT8_C(0x08)
 #define B4_EVENT_TERRAIN_START         UINT8_C(0x09)
 #define B4_EVENT_TERRAIN_END           UINT8_C(0x0a)
+#define B4_EVENT_LIFT_OR_OVERTURN      UINT8_C(0x0b)
 
 /*
  * Fixed-size event record:
@@ -35,10 +36,10 @@
  *   code; otherwise value must be zero.
  * - value: signed 32-bit type-specific value. Units are centidegrees for
  *   tilt, terrain-start slope, ramp slope, and hump slope; millimetres for
- *   an odometry-assisted peak-height estimate; milli-g for collision peak
- *   dynamic acceleration; and milli-degrees/second for estimated magnetic
- *   heading rate. Motion-class values use the B4_MOTION_CLASS codes. A
- *   terrain-end and calibration-ready event carry no value.
+ *   an odometry-assisted peak-height estimate; and milli-degrees/second for
+ *   estimated magnetic heading rate. Motion-class values use the
+ *   B4_MOTION_CLASS codes. Terrain-end, calibration-ready, and
+ *   lift/overturn events carry no value. Event code 0x06 is reserved.
  *   Detection defaults are tuning values, not project-specified thresholds.
  */
 typedef struct {

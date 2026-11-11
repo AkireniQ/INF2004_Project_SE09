@@ -45,8 +45,19 @@ uint8_t b4_event_is_valid(const B4_EVENT *event)
 		return 0U;
 	}
 
-	if ((event->type < B4_EVENT_TILT) ||
-	    (event->type > B4_EVENT_TERRAIN_END)) {
+	switch (event->type) {
+	case B4_EVENT_TILT:
+	case B4_EVENT_RAMP_DETECTED:
+	case B4_EVENT_HUMP_DETECTED:
+	case B4_EVENT_HUMP_PEAK_HEIGHT:
+	case B4_EVENT_MOTION_CLASS:
+	case B4_EVENT_TURN_RATE:
+	case B4_EVENT_CALIBRATION_READY:
+	case B4_EVENT_TERRAIN_START:
+	case B4_EVENT_TERRAIN_END:
+	case B4_EVENT_LIFT_OR_OVERTURN:
+		break;
+	default:
 		return 0U;
 	}
 

@@ -112,9 +112,7 @@ EXPORT INT usermain(void)
 	CHECK(subsystem1_init(), "subsystem1_init");
 	CHECK(subsystem2_init(), "subsystem2_init");
 	CHECK(subsystem3_init(), "subsystem3_init");
-#if APP_TEST
 	CHECK(subsystem4_init(), "subsystem4_init");
-#endif
 	CHECK(subsystem5_init(), "subsystem5_init");
 
 	ER vc_er = vehicle_init();
@@ -126,9 +124,7 @@ EXPORT INT usermain(void)
 	CHECK(subsystem1_start(), "subsystem1_start");
 	CHECK(subsystem2_start(), "subsystem2_start");
 	CHECK(subsystem3_start(), "subsystem3_start");
-#if APP_TEST
 	CHECK(subsystem4_start(), "subsystem4_start");
-#endif
 	CHECK(subsystem5_start(), "subsystem5_start");
 
 	tm_printf((UB*)"all subsystems started\n\n");
