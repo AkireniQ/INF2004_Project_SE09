@@ -1,6 +1,6 @@
 /*
  * b4_processor.h
- * Calibration, terrain, motion, impact, and compass-rate processing.
+ * Calibration, terrain, motion, lift/overturn, and compass-rate processing.
  */
 
 #ifndef B4_PROCESSOR_H
@@ -13,13 +13,16 @@
 #include "b4_imu.h"
 
 #define B4_PROCESSOR_MAX_EVENTS UINT8_C(6)
+#define B4_PROCESSOR_FLAG_STOP_LATCHED UINT8_C(0x01)
+#define B4_PROCESSOR_FLAG_STOP_REQUESTED UINT8_C(0x02)
+#define B4_PROCESSOR_FLAG_VALID_MASK \
+	(B4_PROCESSOR_FLAG_STOP_LATCHED | B4_PROCESSOR_FLAG_STOP_REQUESTED)
 
 typedef enum {
 	B4_MOTION_CALIBRATING = 0,
 	B4_MOTION_STATIONARY,
 	B4_MOTION_DYNAMIC,
-	B4_MOTION_VIBRATION,
-	B4_MOTION_IMPACT
+	B4_MOTION_VIBRATION
 } B4_MOTION_CLASS;
 
 typedef enum {
@@ -43,7 +46,6 @@ typedef struct {
 	uint16_t slope_exit_cdeg;
 	uint16_t dynamic_enter_mg;
 	uint16_t vibration_enter_mg;
-	uint16_t impact_enter_mg;
 	uint16_t min_mag_norm_dut;
 	uint16_t turn_event_threshold_mdps;
 	uint8_t transition_samples;
@@ -69,16 +71,19 @@ typedef struct {
 typedef struct {
 	int32_t turn_rate_mdps;
 	int32_t peak_height_mm;
+	int32_t max_height_mm;
 	int16_t tilt_cdeg;
 	int16_t slope_cdeg;
 	uint16_t dynamic_accel_mg;
 	uint8_t calibration_ready;
 	uint8_t calibration_status;
 	uint8_t tilt_active;
+	uint8_t hump_detected;
 	uint8_t terrain_state;
 	uint8_t height_valid;
 	uint8_t motion_class;
 	uint8_t turn_rate_valid;
+	uint8_t safety_flags; /* one-shot stop request and persistent stop latch */
 	uint8_t event_count;
 	uint8_t events_dropped;
 	B4_EVENT events[B4_PROCESSOR_MAX_EVENTS];
@@ -92,10 +97,10 @@ typedef struct {
 	int32_t filtered_turn_rate_mdps;
 	int64_t terrain_height_um;
 	int64_t peak_height_um;
+	int64_t max_height_um;
 	int32_t terrain_peak_slope_cdeg;
 	uint32_t last_timestamp_ms;
 	uint32_t last_mag_timestamp_ms;
-	uint32_t last_impact_timestamp_ms;
 	uint32_t last_turn_event_timestamp_ms;
 	int32_t last_heading_cdeg;
 	uint16_t dynamic_accel_mg;
@@ -109,7 +114,8 @@ typedef struct {
 	uint8_t tilt_release_count;
 	uint8_t dynamic_count;
 	uint8_t vibration_count;
-	uint8_t impact_time_valid;
+	uint8_t lift_overturn_count;
+	uint8_t stop_latched;
 	uint8_t turn_event_time_valid;
 	uint8_t heading_valid;
 	uint8_t height_valid;

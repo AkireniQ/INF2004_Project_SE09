@@ -6,6 +6,7 @@
  */
 
 #include "subsystem4.h"
+#include "b4_i2c_probe.h"
 
 EXPORT ID	mbf_summary;	/* IF-03 */
 EXPORT ID	flg_events;	/* IF-03 */
@@ -46,7 +47,14 @@ EXPORT ER subsystem4_init(void)
 
 EXPORT ER subsystem4_start(void)
 {
+	ER runtime_status = b4_runtime_start();
+	ID tid;
+
+	if (runtime_status < E_OK) {
+		return runtime_status;
+	}
+
 	/* No affinity: the scheduler may run it on either core */
-	ID tid = app_start_task(monitor_task, S4_PRI_MONITOR, 0, "monitor_task");
+	tid = app_start_task(monitor_task, S4_PRI_MONITOR, 0, "monitor_task");
 	return (tid < E_OK) ? tid : E_OK;
 }

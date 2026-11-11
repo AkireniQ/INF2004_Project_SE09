@@ -1,16 +1,16 @@
 /*
  * b4_i2c_probe.c
- * Test-build-only I2C probe for identifying a likely LSM303DLHC.
+ * Buddy 4 single-owner IMU runtime and test-build I2C diagnostics.
  */
 
 #include "b4_i2c_probe.h"
 #include "b4_lsm303dlhc.h"
 #include "b4_processor.h"
 #include "b4_odometry.h"
+#include "b4_safety_dispatch.h"
 #include "subsystem4.h"
 #include "../subsystem2/subsystem2.h"
-
-#if APP_TEST
+#include "../vehicle_controller/vehicle_controller.h"
 
 #include <stdint.h>
 #include <tk/device.h>
@@ -30,23 +30,27 @@
 #define B4_LSM303DLHC_MAG_ID_1     0x34U
 #define B4_LSM303DLHC_MAG_ID_2     0x33U
 #define B4_I2C_PROBE_PERIOD_MS     3000
-#define B4_TEST_SAMPLE_PERIOD_MS   TIMER_PERIOD
-#define B4_TEST_SAMPLE_PERIOD_US   (B4_TEST_SAMPLE_PERIOD_MS * 1000U)
+#define B4_RUNTIME_SAMPLE_PERIOD_MS TIMER_PERIOD
+
+#if APP_TEST
 #define B4_TEST_LOG_EVERY_SAMPLES  10U
 
 typedef struct {
 	int32_t turn_rate_mdps;
 	int32_t peak_height_mm;
+	int32_t max_height_mm;
 	int16_t tilt_cdeg;
 	int16_t slope_cdeg;
 	uint16_t dynamic_accel_mg;
 	uint8_t calibration_ready;
 	uint8_t calibration_status;
 	uint8_t tilt_active;
+	uint8_t hump_detected;
 	uint8_t terrain_state;
 	uint8_t height_valid;
 	uint8_t motion_class;
 	uint8_t turn_rate_valid;
+	uint8_t safety_flags;
 	uint8_t event_count;
 	uint8_t events_dropped;
 	int32_t event_encode_status;
@@ -80,11 +84,88 @@ typedef struct {
 	uint8_t status_after_read;
 	uint8_t raw_xyz[6];
 } B4_TEST_LOG_RECORD;
+#endif
 
+#if APP_TEST
 static ID b4_test_log_mbf = -1;
 static volatile uint32_t b4_test_log_drops;
+#endif
 static ID b4_sampler_task_id = -1;
+static ID b4_snapshot_mtx = -1;
+static B4_PROCESSOR_OUTPUT b4_latest_output;
+static uint8_t b4_snapshot_valid;
+static uint8_t b4_runtime_started;
 
+EXPORT uint8_t b4_get_snapshot(B4_PROCESSOR_OUTPUT *out)
+{
+	ER status;
+
+	if ((out == NULL) || (b4_snapshot_mtx < E_OK)) {
+		return 0U;
+	}
+
+	status = tk_loc_mtx(b4_snapshot_mtx, TMO_POL);
+	if (status < E_OK) {
+		return 0U;
+	}
+	if (b4_snapshot_valid == 0U) {
+		status = tk_unl_mtx(b4_snapshot_mtx);
+		if (status < E_OK) {
+			tm_printf((UB *)"Buddy4 snapshot: unlock failed=%d\n",
+				  status);
+		}
+		return 0U;
+	}
+	*out = b4_latest_output;
+	status = tk_unl_mtx(b4_snapshot_mtx);
+	if (status < E_OK) {
+		tm_printf((UB *)"Buddy4 snapshot: unlock failed=%d\n", status);
+		return 0U;
+	}
+	return 1U;
+}
+
+static void b4_probe_publish_output(const B4_PROCESSOR_OUTPUT *output)
+{
+	ER status = tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR);
+
+	if (status < E_OK) {
+		tm_printf((UB *)"Buddy4 snapshot: lock failed=%d\n", status);
+		return;
+	}
+	b4_latest_output = *output;
+	b4_snapshot_valid = 1U;
+	status = tk_unl_mtx(b4_snapshot_mtx);
+	if (status < E_OK) {
+		tm_printf((UB *)"Buddy4 snapshot: unlock failed=%d\n", status);
+	}
+}
+
+static void b4_probe_dispatch_stop(const B4_PROCESSOR_OUTPUT *output)
+{
+	B4_SAFETY_DISPATCH_STATUS status = b4_safety_dispatch_stop(
+		output->safety_flags, motion_stop, vehicle_request_stop);
+
+	if ((status != B4_SAFETY_DISPATCH_NOT_REQUESTED) &&
+	    (status != B4_SAFETY_DISPATCH_DISPATCHED)) {
+		tm_printf((UB *)"Buddy4 safety: stop dispatch failed=%d\n",
+			  (int)status);
+	}
+}
+
+static void b4_probe_delete_snapshot_mutex(void)
+{
+	ER status = tk_del_mtx(b4_snapshot_mtx);
+
+	if (status < E_OK) {
+		tm_printf((UB *)"Buddy4 snapshot: mutex delete failed=%d\n",
+			  status);
+	} else {
+		b4_snapshot_mtx = -1;
+	}
+}
+
+#if APP_TEST
 static uint32_t b4_probe_timer_us(void)
 {
 	return *(volatile uint32_t *)TIMER_TIMERAWL;
@@ -97,16 +178,19 @@ static void b4_probe_store_processed(B4_TEST_PROCESS_OUTPUT *destination,
 
 	destination->turn_rate_mdps = source->turn_rate_mdps;
 	destination->peak_height_mm = source->peak_height_mm;
+	destination->max_height_mm = source->max_height_mm;
 	destination->tilt_cdeg = source->tilt_cdeg;
 	destination->slope_cdeg = source->slope_cdeg;
 	destination->dynamic_accel_mg = source->dynamic_accel_mg;
 	destination->calibration_ready = source->calibration_ready;
 	destination->calibration_status = source->calibration_status;
 	destination->tilt_active = source->tilt_active;
+	destination->hump_detected = source->hump_detected;
 	destination->terrain_state = source->terrain_state;
 	destination->height_valid = source->height_valid;
 	destination->motion_class = source->motion_class;
 	destination->turn_rate_valid = source->turn_rate_valid;
+	destination->safety_flags = source->safety_flags;
 	destination->event_count = source->event_count;
 	destination->events_dropped = source->events_dropped;
 	destination->event_encode_status = B4_EVENT_STATUS_OK;
@@ -124,7 +208,9 @@ static void b4_probe_store_processed(B4_TEST_PROCESS_OUTPUT *destination,
 		}
 	}
 }
+#endif
 
+#if APP_TEST
 static void b4_probe_make_log_record(B4_TEST_LOG_RECORD *record,
 				     const B4_LSM303DLHC *sensor)
 {
@@ -138,12 +224,14 @@ static void b4_probe_make_log_record(B4_TEST_LOG_RECORD *record,
 		&record->mag_data_us, &record->sensor_read_us,
 		record->raw_xyz);
 }
+#endif
 
 /*
  * The USB console has a finite output ring. Wait until TinyUSB is mounted
  * before printing diagnostics so startup output is not lost before a host
  * enumerates the CDC interface.
  */
+#if APP_TEST
 static void b4_probe_wait_for_console(void)
 {
 #if TM_CONSOLE_USB_CDC
@@ -154,6 +242,7 @@ static void b4_probe_wait_for_console(void)
 	}
 #endif
 }
+#endif
 
 static void b4_probe_accel(ID device, uint8_t address)
 {
@@ -211,7 +300,7 @@ static void b4_probe_mag(ID device)
 		  ? "LSM303DLHC signature match" : "unexpected ID sequence");
 }
 
-EXPORT ER b4_i2c_probe_run(void)
+static ER b4_i2c_probe_run(void)
 {
 	static const UB device_name[] = "iica";
 	ID device;
@@ -237,6 +326,7 @@ EXPORT ER b4_i2c_probe_run(void)
 	return E_OK;
 }
 
+#if APP_TEST
 EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 {
 	B4_TEST_LOG_RECORD record;
@@ -337,11 +427,13 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 					  (unsigned int)record.processed.motion_class,
 					  (unsigned int)record.processed.terrain_state);
 				if (record.processed.height_valid != 0U) {
-					tm_printf((UB *)" approx_height_est_imu_wheel_odometry=%d mm",
-						  (int)record.processed.peak_height_mm);
+					tm_printf((UB*)" current_hump_height=%d mm max_hump_height=%d mm",
+						  (int)record.processed.peak_height_mm,
+						  (int)record.processed.max_height_mm);
 				} else {
-					tm_printf((UB *)" peak_height_est=unavailable "
-						  "(approx IMU+wheel odometry; S2_STATUS lacks direction)");
+					tm_printf((UB*)" current_hump_height=unavailable max_hump_height=%d mm "
+						  "(forward-only IMU+wheel odometry)",
+						  (int)record.processed.max_height_mm);
 				}
 				if (record.processed.turn_rate_valid != 0U) {
 					tm_printf((UB *)" turn_rate_est=%d mdps\n",
@@ -355,6 +447,11 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 					  "class=%u\n",
 					  (unsigned int)record.processed.calibration_status,
 					  (unsigned int)record.processed.motion_class);
+			}
+			if ((record.processed.safety_flags &
+			     B4_PROCESSOR_FLAG_STOP_LATCHED) != 0U) {
+				tm_printf((UB *)"Buddy4 safety: lift/overturn stop "
+					  "latched; explicit restart required\n");
 			}
 			{
 				uint8_t event_index;
@@ -407,29 +504,34 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 		}
 	}
 }
+#endif
 
 /*
  * Cyclic handler runs at the kernel tick rate and only wakes the acquisition
  * task. Sensor I/O and logging stay in task context.
  */
-EXPORT void b4_i2c_sample_tick(void *exinf)
+EXPORT void b4_runtime_sample_tick(void *exinf)
 {
 	(void)exinf;
 	(void)tk_wup_tsk(b4_sampler_task_id);
 }
 
-EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
+EXPORT void b4_runtime_task(INT stacd, void *exinf)
 {
 	B4_LSM303DLHC sensor = {0};
+#if APP_TEST
 	B4_TEST_LOG_RECORD record = {0};
+#endif
 	B4_PROCESSOR processor = {0};
 	B4_PROCESSOR_CONFIG processor_config;
 	B4_CALIBRATION_STATUS processor_status;
 	uint32_t sample_sequence = 0U;
+#if APP_TEST
 	uint32_t loop_start_us;
 	uint32_t loop_start_previous_us = 0U;
 	uint32_t max_loop_period_us = 0U;
 	uint32_t tick_wait_us = 0U;
+#endif
 	uint32_t odometry_previous_timestamp_ms = 0U;
 
 	(void)stacd;
@@ -446,13 +548,19 @@ EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
 	}
 
 	while (1) {
+#if APP_TEST
 		ER send_status;
+#endif
+		B4_IMU_SAMPLE sample = {0};
+		B4_PROCESSOR_OUTPUT processed = {0};
+		ER read_status;
 
 		if (sensor.initialized == 0U) {
 			B4_LSM303DLHC_STATUS init_status =
 				b4_lsm303dlhc_init(&sensor);
 
 			if (init_status != B4_LSM303DLHC_STATUS_OK) {
+#if APP_TEST
 				record.read_status = (int32_t)init_status;
 				record.io_error = b4_lsm303dlhc_last_error();
 				record.sequence = sample_sequence++;
@@ -463,10 +571,16 @@ EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
 				if (send_status < E_OK) {
 					b4_test_log_drops++;
 				}
+#else
+				tm_printf((UB *)"Buddy4 sensor: initialization failed=%d "
+					  "I2C=%d\n", (int)init_status,
+					  b4_lsm303dlhc_last_error());
+#endif
 				goto wait_for_next_tick;
 			}
 		}
 
+#if APP_TEST
 		loop_start_us = b4_probe_timer_us();
 		if (loop_start_previous_us != 0U) {
 			record.loop_period_us =
@@ -477,25 +591,28 @@ EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
 		}
 		loop_start_previous_us = loop_start_us;
 
-		record.sample = (B4_IMU_SAMPLE){0};
-		record.read_status = b4_lsm303dlhc_read(&sensor, &record.sample);
+#endif
+		read_status = b4_lsm303dlhc_read(&sensor, &sample);
+#if APP_TEST
+		record.sample = sample;
+		record.read_status = read_status;
 		record.io_error = b4_lsm303dlhc_last_error();
 		record.sensor_read_us = sensor.read_total_us;
 		record.dropped_reports = b4_test_log_drops;
 		record.processed = (B4_TEST_PROCESS_OUTPUT){0};
-		if ((record.read_status == B4_LSM303DLHC_STATUS_OK) &&
-		    (record.sample.flags != 0U)) {
-			B4_PROCESSOR_OUTPUT processed = {0};
+#endif
+		if ((read_status == B4_LSM303DLHC_STATUS_OK) &&
+		    (sample.flags != 0U)) {
 			S2_STATUS motion_status;
 			uint8_t speed_valid = 0U;
 			int32_t speed_mm_s = 0;
 			uint32_t elapsed_ms = 0U;
 
 			if (odometry_previous_timestamp_ms != 0U) {
-				elapsed_ms = record.sample.timestamp_ms -
+				elapsed_ms = sample.timestamp_ms -
 					odometry_previous_timestamp_ms;
 			}
-			odometry_previous_timestamp_ms = record.sample.timestamp_ms;
+			odometry_previous_timestamp_ms = sample.timestamp_ms;
 
 			if (motion_get_status(&motion_status)) {
 				uint16_t mode = (uint16_t)s2_get_bits(&motion_status, 0U, 2U);
@@ -504,18 +621,24 @@ EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
 				uint16_t right_rpm = (uint16_t)s2_get_bits(&motion_status, 18U, 9U);
 				B4_ODOMETRY_STATUS odometry_status = b4_odometry_validate(
 					mode, faults, left_rpm, right_rpm,
-					0U, elapsed_ms, &speed_mm_s);
+					/* Controlled hump test: wheel direction is forward-only. */
+					1U, elapsed_ms, &speed_mm_s);
 				if (odometry_status == B4_ODOMETRY_VALID) {
 					speed_valid = 1U;
 				}
 			}
 
-			(void)b4_processor_update(&processor, &record.sample,
+			(void)b4_processor_update(&processor, &sample,
 						  speed_valid, speed_mm_s,
 						  &processed);
+			b4_probe_dispatch_stop(&processed);
+			b4_probe_publish_output(&processed);
+#if APP_TEST
 			b4_probe_store_processed(&record.processed, &processed);
+#endif
 		}
 
+#if APP_TEST
 		if (((sample_sequence % B4_TEST_LOG_EVERY_SAMPLES) == 0U) ||
 		    (record.processed.event_count != 0U) ||
 		    ((record.read_status != B4_LSM303DLHC_STATUS_OK) &&
@@ -531,13 +654,24 @@ EXPORT void b4_i2c_probe_task(INT stacd, void *exinf)
 				b4_test_log_drops++;
 			}
 		}
+#else
+		if ((read_status < E_OK) &&
+		    (read_status != B4_LSM303DLHC_STATUS_NO_FRESH_DATA)) {
+			tm_printf((UB *)"Buddy4 sensor: read failed=%d I2C=%d\n",
+				  (int)read_status,
+				  b4_lsm303dlhc_last_error());
+		}
+#endif
 		sample_sequence++;
 
 wait_for_next_tick:
 		{
+#if APP_TEST
 			uint32_t wait_start_us = b4_probe_timer_us();
+#endif
 			ER wait_status = tk_slp_tsk(TMO_FEVR);
 
+#if APP_TEST
 			tick_wait_us = b4_probe_timer_us() - wait_start_us;
 			if (wait_status < E_OK) {
 				record.read_status = wait_status;
@@ -545,53 +679,84 @@ wait_for_next_tick:
 				(void)tk_snd_mbf(b4_test_log_mbf, &record,
 						 (INT)sizeof(record), TMO_POL);
 			}
+#else
+			if (wait_status < E_OK) {
+				tm_printf((UB *)"Buddy4 sampler: sleep failed=%d\n",
+					  (int)wait_status);
+			}
+#endif
 		}
 	}
 }
 
-EXPORT ER b4_i2c_probe_start(void)
+EXPORT ER b4_runtime_start(void)
 {
+#if APP_TEST
 	T_CMBF cmbf = {0};
+#endif
+	T_CMTX cmtx = {0};
 	T_CCYC ccyc = {0};
 	ID task_id;
 	ID cycle_id;
 
+	if (b4_snapshot_mtx >= E_OK) {
+		return E_OBJ;
+	}
+	cmtx.mtxatr = TA_INHERIT;
+	b4_snapshot_mtx = tk_cre_mtx(&cmtx);
+	if (b4_snapshot_mtx < E_OK) {
+		tm_printf((UB *)"Buddy4 snapshot: mutex create failed=%d\n",
+			  b4_snapshot_mtx);
+		return (ER)b4_snapshot_mtx;
+	}
+#if APP_TEST
 	cmbf.mbfatr = TA_TFIFO;
 	cmbf.bufsz = 4 * (INT)sizeof(B4_TEST_LOG_RECORD);
 	cmbf.maxmsz = (INT)sizeof(B4_TEST_LOG_RECORD);
 	b4_test_log_mbf = tk_cre_mbf(&cmbf);
 	if (b4_test_log_mbf < E_OK) {
+		b4_probe_delete_snapshot_mutex();
 		tm_printf((UB *)"Buddy4 logger: message buffer create failed=%d\n",
 			  b4_test_log_mbf);
 		return (ER)b4_test_log_mbf;
 	}
-
 	task_id = app_start_task(b4_i2c_log_task, 21, TP_PRC1,
 				 "b4_i2c_log");
 	if (task_id < E_OK) {
 		(void)tk_del_mbf(b4_test_log_mbf);
+		b4_probe_delete_snapshot_mutex();
 		return (ER)task_id;
 	}
+#endif
 
 	/* High-priority core-1 task avoids the slower monitor/USB work on core 0. */
-	task_id = app_start_task(b4_i2c_probe_task, 10, TP_PRC2,
-				 "b4_i2c_sample");
+	task_id = app_start_task(b4_runtime_task, 10, TP_PRC2,
+				 "b4_imu_runtime");
 	if (task_id < E_OK) {
 		tm_printf((UB *)"Buddy4 sampler: task start failed, error=%d\n",
 			  task_id);
+#if APP_TEST
 		(void)tk_del_mbf(b4_test_log_mbf);
+#endif
+		b4_probe_delete_snapshot_mutex();
 		return (ER)task_id;
 	}
 	b4_sampler_task_id = task_id;
 
 	ccyc.cycatr = TA_HLNG;
-	ccyc.cychdr = (FP)b4_i2c_sample_tick;
-	ccyc.cyctim = B4_TEST_SAMPLE_PERIOD_MS;
-	ccyc.cycphs = B4_TEST_SAMPLE_PERIOD_MS;
+	ccyc.cychdr = (FP)b4_runtime_sample_tick;
+	ccyc.cyctim = B4_RUNTIME_SAMPLE_PERIOD_MS;
+	ccyc.cycphs = B4_RUNTIME_SAMPLE_PERIOD_MS;
 	cycle_id = tk_cre_cyc(&ccyc);
 	if (cycle_id < E_OK) {
 		tm_printf((UB *)"Buddy4 sampler: cyclic handler create failed=%d\n",
 			  cycle_id);
+		(void)tk_del_tsk(b4_sampler_task_id);
+		b4_sampler_task_id = -1;
+#if APP_TEST
+		(void)tk_del_mbf(b4_test_log_mbf);
+#endif
+		b4_probe_delete_snapshot_mutex();
 		return (ER)cycle_id;
 	}
 
@@ -600,10 +765,20 @@ EXPORT ER b4_i2c_probe_start(void)
 		tm_printf((UB *)"Buddy4 sampler: cyclic handler start failed=%d\n",
 			  task_id);
 		(void)tk_del_cyc(cycle_id);
+		(void)tk_del_tsk(b4_sampler_task_id);
+		b4_sampler_task_id = -1;
+#if APP_TEST
+		(void)tk_del_mbf(b4_test_log_mbf);
+#endif
+		b4_probe_delete_snapshot_mutex();
 		return (ER)task_id;
 	}
 
+	b4_runtime_started = 1U;
 	return E_OK;
 }
 
-#endif /* APP_TEST */
+EXPORT uint8_t b4_runtime_is_started(void)
+{
+	return b4_runtime_started;
+}
