@@ -141,13 +141,20 @@ static void b4_probe_publish_output(const B4_PROCESSOR_OUTPUT *output)
 	}
 }
 
-static void b4_probe_dispatch_stop(const B4_PROCESSOR_OUTPUT *output)
+static void b4_probe_dispatch_stop(const B4_PROCESSOR_OUTPUT *output,
+				  uint32_t sample_timestamp_ms)
 {
 	B4_SAFETY_DISPATCH_STATUS status = b4_safety_dispatch_stop(
 		output->safety_flags, motion_stop, vehicle_request_stop);
 
-	if ((status != B4_SAFETY_DISPATCH_NOT_REQUESTED) &&
-	    (status != B4_SAFETY_DISPATCH_DISPATCHED)) {
+	if (status == B4_SAFETY_DISPATCH_DISPATCHED) {
+		tm_printf((UB *)"Buddy4 safety: stop dispatched t=%u ms "
+			  "tilt=%d cdeg slope=%d cdeg terrain=%u flags=0x%02x\n",
+			  (unsigned int)sample_timestamp_ms,
+			  (int)output->tilt_cdeg, (int)output->slope_cdeg,
+			  (unsigned int)output->terrain_state,
+			  (unsigned int)output->safety_flags);
+	} else if (status != B4_SAFETY_DISPATCH_NOT_REQUESTED) {
 		tm_printf((UB *)"Buddy4 safety: stop dispatch failed=%d\n",
 			  (int)status);
 	}
@@ -338,8 +345,8 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 	b4_probe_wait_for_console();
 	tm_printf((UB *)"\n=== Buddy 4 LSM303DLHC timing test (TEST=1) ===\n");
 	tm_printf((UB *)"Acquisition target=100 Hz; USB reports every 100 ms\n");
-	tm_printf((UB *)"Algorithms: defaults use sensor X as forward, Z as up; "
-		  "verify mount axes/signs before interpreting terrain output\n");
+	tm_printf((UB *)"Algorithms: sensor -Y is forward, Z is up; "
+		  "terrain slope is positive uphill\n");
 
 	while (1) {
 		INT length = tk_rcv_mbf(b4_test_log_mbf, &record, TMO_FEVR);
@@ -603,9 +610,9 @@ EXPORT void b4_runtime_task(INT stacd, void *exinf)
 #endif
 		if ((read_status == B4_LSM303DLHC_STATUS_OK) &&
 		    (sample.flags != 0U)) {
-			S2_STATUS motion_status;
 			uint8_t speed_valid = 0U;
 			int32_t speed_mm_s = 0;
+			S2_STATUS motion_status;
 			uint32_t elapsed_ms = 0U;
 
 			if (odometry_previous_timestamp_ms != 0U) {
@@ -631,7 +638,7 @@ EXPORT void b4_runtime_task(INT stacd, void *exinf)
 			(void)b4_processor_update(&processor, &sample,
 						  speed_valid, speed_mm_s,
 						  &processed);
-			b4_probe_dispatch_stop(&processed);
+			b4_probe_dispatch_stop(&processed, sample.timestamp_ms);
 			b4_probe_publish_output(&processed);
 #if APP_TEST
 			b4_probe_store_processed(&record.processed, &processed);

@@ -33,8 +33,8 @@ typedef enum {
 
 /*
  * Defaults are conservative starting values for tuning, not values specified
- * in the project documents. Forward/up axes and signs must match the actual
- * board mounting and vehicle frame before interpreting slope/hump output.
+ * in the project documents. The current GY-511 mounting uses sensor -Y as
+ * forward and +Z as up; change the axis/sign mapping if the board is remounted.
  */
 typedef struct {
 	B4_CALIBRATION_CONFIG calibration;
@@ -49,6 +49,9 @@ typedef struct {
 	uint16_t min_mag_norm_dut;
 	uint16_t turn_event_threshold_mdps;
 	uint8_t transition_samples;
+	/* Terrain-only debounce; shared motion/safety debounce is unchanged. */
+	uint8_t terrain_transition_samples;
+	/* Samples near level tolerated before ending an ascending terrain event. */
 	uint8_t terrain_end_samples;
 	uint8_t forward_axis;
 	uint8_t up_axis;

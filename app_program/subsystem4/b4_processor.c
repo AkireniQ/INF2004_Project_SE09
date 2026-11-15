@@ -14,13 +14,15 @@
 #define B4_DEFAULT_GRAVITY_MAX_MG     UINT16_C(1250)
 #define B4_DEFAULT_TILT_ENTER_CDEG    UINT16_C(1200)
 #define B4_DEFAULT_TILT_EXIT_CDEG     UINT16_C(800)
-#define B4_DEFAULT_SLOPE_ENTER_CDEG   UINT16_C(800)
-#define B4_DEFAULT_SLOPE_EXIT_CDEG    UINT16_C(500)
+#define B4_DEFAULT_SLOPE_ENTER_CDEG   UINT16_C(300)
+#define B4_DEFAULT_SLOPE_EXIT_CDEG    UINT16_C(200)
 #define B4_DEFAULT_DYNAMIC_ENTER_MG   UINT16_C(120)
 #define B4_DEFAULT_VIBRATION_ENTER_MG UINT16_C(250)
 #define B4_DEFAULT_MIN_MAG_NORM_DUT   UINT16_C(100)
 #define B4_DEFAULT_TURN_EVENT_MDPS    UINT16_C(15000)
 #define B4_DEFAULT_TRANSITION_SAMPLES UINT8_C(3)
+#define B4_DEFAULT_TERRAIN_TRANSITION_SAMPLES UINT8_C(5)
+#define B4_DEFAULT_TERRAIN_END_SAMPLES UINT8_C(75)
 #define B4_LIFT_LOW_G_MG              UINT16_C(350)
 #define B4_LIFT_TILT_ENTER_CDEG        UINT16_C(6000)
 #define B4_TURN_EVENT_COOLDOWN_MS     UINT32_C(500)
@@ -133,7 +135,9 @@ static uint8_t b4_processor_config_valid(const B4_PROCESSOR_CONFIG *config)
 	    (config->vibration_enter_mg <= config->dynamic_enter_mg) ||
 	    (config->min_mag_norm_dut == 0U) ||
 	    (config->transition_samples == 0U) ||
-	    (config->terrain_end_samples < config->transition_samples) ||
+	    (config->terrain_transition_samples == 0U) ||
+	    (config->terrain_end_samples <
+	     config->terrain_transition_samples) ||
 	    (config->forward_axis >= B4_IMU_AXIS_COUNT) ||
 	    (config->up_axis >= B4_IMU_AXIS_COUNT) ||
 	    (config->forward_axis == config->up_axis) ||
@@ -171,10 +175,12 @@ void b4_processor_default_config(B4_PROCESSOR_CONFIG *config)
 	config->min_mag_norm_dut = B4_DEFAULT_MIN_MAG_NORM_DUT;
 	config->turn_event_threshold_mdps = B4_DEFAULT_TURN_EVENT_MDPS;
 	config->transition_samples = B4_DEFAULT_TRANSITION_SAMPLES;
-	config->terrain_end_samples = UINT8_C(15);
-	config->forward_axis = 0U;
+	config->terrain_transition_samples =
+		B4_DEFAULT_TERRAIN_TRANSITION_SAMPLES;
+	config->terrain_end_samples = B4_DEFAULT_TERRAIN_END_SAMPLES;
+	config->forward_axis = 1U;
 	config->up_axis = 2U;
-	config->forward_sign = 1;
+	config->forward_sign = -1;
 	config->up_sign = 1;
 }
 
@@ -384,7 +390,7 @@ static void b4_processor_update_terrain(B4_PROCESSOR *processor,
 					B4_PROCESSOR_OUTPUT *output)
 {
 	int32_t abs_slope = b4_processor_abs_i32(slope_cdeg);
-	uint8_t debounce = processor->config.transition_samples;
+	uint8_t debounce = processor->config.terrain_transition_samples;
 
 	if (gravity_valid == 0U) {
 		processor->tilt_count = 0U;
