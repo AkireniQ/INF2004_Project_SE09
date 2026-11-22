@@ -7,9 +7,26 @@
 #include "subsystem3.h"
 #include "../vehicle_controller/vehicle_controller.h"
 
+enum { S3_WAIT_TICK, S3_READ_ADC, S3_UPDATE_STEERING, S3_SUBMIT_LINE };
+LOCAL ID owner_id;
+LOCAL unsigned sampler_stage;
+
+EXPORT void s3_log_sampler_state(void)
+{
+    static const char *const stages[] = {
+        "waiting for timer", "reading ADC", "updating steering", "submitting IR sample",
+    };
+    ID task = __atomic_load_n(&owner_id, __ATOMIC_ACQUIRE);
+    unsigned stage = __atomic_load_n(&sampler_stage, __ATOMIC_RELAXED);
+    T_RTSK state = {0};
+    ER result = task > 0 ? tk_ref_tsk(task, &state) : E_NOEXS;
+    tm_printf((UB *)"[S3] IR sampler: %s, task state=%u, wait=0x%x, object=%d, status=%d\n",
+              stages[stage], state.tskstat, (unsigned)state.tskwait, state.wid, result);
+}
+
 
 /* Calibration: raw ADC on white paper and on the black line (L, C, R).
-   Measure on your track; the live check below prints the raw values. */
+   Measure on your track before tuning the line thresholds. */
 LOCAL const INT white_raw[3] = { 130, 130, 130 };
 LOCAL const INT black_raw[3] = { 3200, 3200, 3200 };
 
@@ -25,292 +42,100 @@ LOCAL INT darkness(INT raw, INT white, INT black)
 }
 
 
-/* Read all three sensors; masked-off sensors count as white (0). */
-EXPORT ER line_sense(INT *l, INT *c, INT *r)
+/* Only the outer sensors are required for steering and START. */
+EXPORT ER line_sense(INT *left, INT *center, INT *right)
 {
-    INT raw[3];
-    INT i;
-    INT dk[3];
-
-
-    for (i = 0; i < 3; i++) {
-        if (S3_IR_MASK & (1 << i)) {
-            raw[i] = ir_read(i);
-            if (raw[i] < 0) { return E_IO; }     /* ADC error: skip this cycle */
-            dk[i] = darkness(raw[i], white_raw[i], black_raw[i]);
-        } else {
-            dk[i] = 0;
-        }
-    }
-    *l = dk[0]; *c = dk[1]; *r = dk[2];
+    INT left_raw = ir_read(0);
+    INT right_raw = ir_read(2);
+    if (left_raw < 0 || right_raw < 0) { return E_IO; }
+    *left = darkness(left_raw, white_raw[0], black_raw[0]);
+    *right = darkness(right_raw, white_raw[2], black_raw[2]);
+    INT barcode_raw = ir_read(1);
+    *center = barcode_raw < 0 ? -1 : darkness(barcode_raw, white_raw[1], black_raw[1]);
     return E_OK;
 }
 
-
-/* PURE decision logic. l,c,r = darkness 0..1000. No hardware, no printing.
- *
- * Rules (two outer sensors ride on white, one each side of the line):
- *  - both white, nothing pending : straight at cruise.
- *  - one sensor on black         : steer toward it, GENTLE at once.
- *  - escalation by time since the steer started (dark_ms):
- *        >= S3_HARD_MS   HARD   (inner wheel stopped)
- *        >= S3_HARDER_MS HARDER (outer at S3_HARDER_RPM, inner stopped)
- *  - sensor white again (SEEK)   : the line is either back between the
- *        sensors or it slid past the sensor to the outside.  We cannot tell,
- *        so keep steering the same way, still escalating, until
- *          . the same sensor sees black again  -> keep going (line coming back)
- *          . the other sensor sees black        -> steer the other way, GENTLE
- *          . S3_SEEK_MS pass with both white    -> give up, straight
- *  - both on black (junction / wide bar): straight, the task handles it.
- * Three-sensor mode (S3_IR_MASK & 0x2): while the centre sensor sees the
- * line the steer stays GENTLE; all white for LOST_TIMEOUT_MS stops.
- * Call it once per LINE_PERIOD_MS; the timers live in LF_STATE.
- */
-EXPORT void line_decide(INT l, INT c, INT r, LF_STATE *st, LF_CMD *cmd)
+LOCAL void tick_release(void *exinf)
 {
-    BOOL ld = (l >= LINE_DARK);
-    BOOL cd = (c >= LINE_DARK);
-    BOOL rd = (r >= LINE_DARK);
-    INT  dir = 0;                      /* <0 left, >0 right, 0 straight */
-    INT  outer, inner;
-
-
-    cmd->stop  = FALSE;
-    cmd->left  = S3_CRUISE_RPM;
-    cmd->right = S3_CRUISE_RPM;
-
-
-    /* 1. Which way is the line pulling right now? */
-    if (rd && !ld)      { dir =  1; }  /* right sensor on black: line is to the right */
-    else if (ld && !rd) { dir = -1; }  /* left sensor on black: line is to the left   */
-
-
-    if (dir != 0) {
-        if (dir == st->last_pos) {
-            if (st->dark_ms < 10000) { st->dark_ms += LINE_PERIOD_MS; }
-        } else {
-            st->last_pos = dir;        /* new side: start again from GENTLE */
-            st->dark_ms  = 0;
-        }
-        st->seek_ms = S3_SEEK_MS;      /* re-arm the seek for when it goes white */
-        st->lost_ms = 0;
-    } else if (ld && rd) {
-        /* Both on black: junction or a wide marking. Drive straight over it. */
-        st->last_pos = 0; st->dark_ms = 0; st->seek_ms = 0; st->lost_ms = 0;
-        return;
-    } else if (st->seek_ms > 0 && st->last_pos != 0) {
-        /* SEEK: sensor went white while steering. Keep turning and keep
-         * escalating; a short black pulse must not end the turn. */
-        st->seek_ms -= LINE_PERIOD_MS;
-        if (st->dark_ms < 10000) { st->dark_ms += LINE_PERIOD_MS; }
-        dir = st->last_pos;
-    } else {
-        /* Both white and no steer pending: straight. */
-        st->last_pos = 0;
-        st->dark_ms  = 0;
-        st->seek_ms  = 0;
-        if (cd || !(S3_IR_MASK & 0x2)) {
-            st->lost_ms = 0;           /* centred (two-sensor mode cannot tell loss) */
-        } else {
-            /* Three sensors and none sees the line: coast, then stop. */
-            if (st->lost_ms < LOST_TIMEOUT_MS) { st->lost_ms += LINE_PERIOD_MS; }
-            if (st->lost_ms >= LOST_TIMEOUT_MS) {
-                cmd->left  = LEVEL_STOPPED;
-                cmd->right = LEVEL_STOPPED;
-                cmd->stop  = TRUE;
-            }
-        }
-        return;
-    }
-
-
-    /* 2. How hard? GENTLE first, harder the longer the steer has lasted.
-     * RPM values stay even for the compact transport. */
-    outer = S3_CURVE_RPM;
-    inner = S3_INNER_RPM;
-    if (!cd) {                         /* centre still on the line: stay gentle */
-        if (st->dark_ms >= S3_HARD_MS)   { inner = LEVEL_STOPPED; }
-        if (st->dark_ms >= S3_HARDER_MS) { outer = S3_HARDER_RPM; }
-    }
-    if (dir > 0) { cmd->left = outer; cmd->right = inner; }   /* turn right */
-    else         { cmd->left = inner; cmd->right = outer; }   /* turn left  */
+    (void)exinf;
+    ID task = __atomic_load_n(&owner_id, __ATOMIC_ACQUIRE);
+    (void)tk_wup_tsk(task);
 }
 
-
-/* The original line_decide() above is unchanged. The controller owns motors;
- * the line task submits copied recommendations at the original cadence. */
-
-typedef enum { ACT_NONE, ACT_STRAIGHT, ACT_LEFT, ACT_RIGHT, ACT_UTURN } ROUTE;
-
-
-LOCAL ROUTE route_map(char code)
+/* Preserve the team's existing v2 telemetry encoding for A through D. */
+LOCAL unsigned barcode_id(char letter)
 {
-    switch (code) {
-    case 'A': return ACT_STRAIGHT;
-    case 'B': return ACT_UTURN;
-    case 'C': return ACT_LEFT;
-    case 'F': return ACT_RIGHT;
-    default:  return ACT_NONE;        /* no barcode, or an unknown letter */
-    }
+    return letter >= 'A' && letter <= 'D' ? (unsigned)(letter - 'A' + 1) : 0u;
 }
-
-
-LOCAL const char *act_name(ROUTE a)
-{
-    switch (a) {
-    case ACT_STRAIGHT: return "STRAIGHT";
-    case ACT_LEFT:     return "LEFT";
-    case ACT_RIGHT:    return "RIGHT";
-    case ACT_UTURN:    return "U-TURN";
-    default:           return "NONE";
-    }
-}
-
-
-/* Stop, drive the wheel centre onto the junction, then turn. Blocks until done. */
-LOCAL BOOL do_turn(ROUTE a)
-{
-    s3_motion_stop();
-    if (!s3_motion_move_mm(S3_ADVANCE_MM)) { return FALSE; }
-    switch (a) {
-    case ACT_LEFT:  return s3_motion_turn(-1, S3_TURN_90);
-    case ACT_RIGHT: return s3_motion_turn( 1, S3_TURN_90);
-    case ACT_UTURN: return s3_motion_turn(-1, 2 * S3_TURN_90);
-    default:        return FALSE;
-    }
-}
-
-
-LOCAL INT centre_dark(void)
-{
-    INT raw = ir_read(1);                       /* GP27 */
-    return (raw < 0) ? -1 : darkness(raw, white_raw[1], black_raw[1]);
-}
-
-
-LOCAL ID owner_id;
-LOCAL void tick_release(void *exinf) { (void)exinf; (void)tk_wup_tsk(owner_id); }
-
 
 EXPORT void line_follow_task(INT stacd, void *exinf)
 {
-    LF_STATE st = { 0, 0, 0, 0 };
-    LF_CMD   cmd;
-    T_CCYC   cyc = {0};
-    INT  l, c, r, d, tick = 0, diag_ms = 0;
-    INT  junc_ms = 0, fl = 0, fr = 0;
-    BOOL on_junction = FALSE, halted = FALSE;
-    char stored = 0, got;
-    ROUTE act;
+    LF_STATE steering = {0};
+    SYSTIM time;
+    UW previous_tick = 0;
+    unsigned last_barcode = 0;
+    BOOL was_following = FALSE;
+    BOOL reported_missed_tick = FALSE;
+    T_CCYC cyc = {0};
 
-
-    (void)stacd; (void)exinf;
-    // barcode_reset(); //UNCOMMENT
-    owner_id = tk_get_tid();
+    (void)stacd;
+    (void)exinf;
+    ID task = tk_get_tid();
+    __atomic_store_n(&owner_id, task, __ATOMIC_RELEASE);
     cyc.cycatr = TA_HLNG | TA_STA;
     cyc.cychdr = (FP)tick_release;
-    cyc.cyctim = S3_TICK_MS;
-    cyc.cycphs = S3_TICK_MS;
-    if (tk_cre_cyc(&cyc) < E_OK) {
-        tm_printf((UB*)"[S3] tick cyclic creation failed\n");
-        vehicle_invalidate_line();
-        tk_ext_tsk();
-        return;
-    }
+    cyc.cyctim = LINE_PERIOD_MS;
+    cyc.cycphs = LINE_PERIOD_MS;
+    ID timer = tk_cre_cyc(&cyc);
+    if (timer < E_OK)
+        tm_printf((UB *)"[S3] line timer creation failed (%d); using timed wakeups\n", timer);
 
-
-    while (1) {
-        tk_slp_tsk(TMO_FEVR);
-        (void)tk_can_wup(owner_id);
-
-
-        /* every tick: barcode on the centre sensor */ //UNCOMMENT
-        // d = centre_dark();
-        // if (d >= 0) {
-        //     barcode_feed(d);
-        //     static INT mx = 0, mn = 1000, t = 0;
-        //     if (d > mx) { mx = d; } if (d < mn) { mn = d; }
-        //     if (++t >= 500) { t = 0; tm_printf((UB*)"[S3] centre dark min=%d max=%d\n", mn, mx); mx = 0; mn = 1000; }
-        //     got = barcode_take();
-        //     if (got != 0) {
-        //         stored = got;
-        //         tm_printf((UB*)"[S3] barcode '%c' stored\n", got);
-        //     }
-        // }
-
-
-        if (++tick < LINE_EVERY_N) { continue; }
-        tick = 0;
-
-
-        /* every LINE_EVERY_N-th tick (= LINE_PERIOD_MS): line following */
-        if (line_sense(&l, &c, &r) != E_OK) {
+    for (;;) {
+        __atomic_store_n(&sampler_stage, S3_WAIT_TICK, __ATOMIC_RELAXED);
+        /* The cyclic interrupt sets the normal cadence. A missed release
+           must not strand the task in sleep with an ageing IR sample. */
+        ER wake = tk_slp_tsk(2 * LINE_PERIOD_MS);
+        if (wake == E_TMOUT && timer >= E_OK && !reported_missed_tick) {
+            tm_printf((UB *)"[S3] missed line timer wakeup; retrying ADC sampling\n");
+            reported_missed_tick = TRUE;
+        } else if (wake < E_OK && wake != E_TMOUT) {
             vehicle_invalidate_line();
-            st = (LF_STATE){0};
+            (void)tk_dly_tsk(LINE_PERIOD_MS);
             continue;
         }
-        /* Use current readings: smoothing both sides delayed curve response. */
-
-
-        //UNCOMMENT
-        // if (barcode_busy()) { junc_ms = 0; }                 /* bars must not look like a junction */
-        // else if (l >= JUNC_DARK && r >= JUNC_DARK) { junc_ms += LINE_PERIOD_MS; }
-        // else { junc_ms = 0; on_junction = FALSE; }
-
-
-        //COMMENT
-        /* TEST: junction check without the barcode guard */
-        if (!halted && vehicle_is_following() && l >= JUNC_DARK && r >= JUNC_DARK) { junc_ms += LINE_PERIOD_MS; }
-        else { junc_ms = 0; on_junction = FALSE; }
-
-
-        if (!on_junction && junc_ms >= JUNCTION_MIN_MS) {
-            on_junction = TRUE;
-
-
-            //COMMENT
-            /* TEST: stop at the first cross junction and stay stopped */
-            tm_printf((UB*)"[S3] JUNCTION (L=%d R=%d): STOP\n", l, r);
-            halted = TRUE;
-
-
-            //UNCOMMENT
-            // act = route_map(stored);
-            // tm_printf((UB*)"[S3] JUNCTION: code='%c' action=%s\n",
-            //           stored ? stored : '-', act_name(act));
-            // stored = 0;
-            // barcode_reset();
-
-
-            // if (act == ACT_NONE) {                           /* no usable code: stop and wait */
-            //     s3_motion_stop();
-            //     halted = TRUE;
-            //     tm_printf((UB*)"[S3] HALTED at junction (no barcode)\n");
-            //     continue;
-            // }
-            // if (act != ACT_STRAIGHT) {                       /* STRAIGHT just keeps following */
-            //     if (!do_turn(act)) {
-            //         halted = TRUE;
-            //         tm_printf((UB*)"[S3] HALTED: turn failed\n");
-            //         continue;
-            //     }
-            //     moving = FALSE; last_l = -1; last_r = -1; age_ms = 0;
-            //     fl = 0; fr = 0; junc_ms = 0;
-            //     st.last_pos = 0; st.dark_ms = 0; st.seek_ms = 0; st.lost_ms = 0;
-            //     continue;                                    /* resume next cycle */
-            // }
+        (void)tk_can_wup(task);
+        (void)tk_get_otm(&time);
+        INT left, center, right;
+        __atomic_store_n(&sampler_stage, S3_READ_ADC, __ATOMIC_RELAXED);
+        if (line_sense(&left, &center, &right) < E_OK) {
+            vehicle_invalidate_line();
+            steering = (LF_STATE){0};
+            barcode_reset();
+            continue;
         }
 
-
-        line_decide(l, c, r, &st, &cmd);
-        if (halted) { cmd = (LF_CMD){0, 0, TRUE}; }
-        vehicle_submit_line(l, c, r, cmd.left, cmd.right, cmd.stop, 0);
-        diag_ms += LINE_PERIOD_MS;
-        if (diag_ms >= 500) {
-            diag_ms = 0;
-            tm_printf((UB*)"[S3] dark L=%d C=%d R=%d target RPM L=%d R=%d stop=%d dark_ms=%d seek=%d\n",
-                      l, c, r, cmd.left, cmd.right, cmd.stop, st.dark_ms, st.seek_ms);
-            s3_motion_diagnostics();
+        __atomic_store_n(&sampler_stage, S3_UPDATE_STEERING, __ATOMIC_RELAXED);
+        BOOL following = vehicle_is_following();
+        if (!following || !was_following) {
+            last_barcode = 0;
+            steering = (LF_STATE){0};
         }
+        if (!following || !was_following || center < 0 ||
+            time.lo - previous_tick > 2u * LINE_PERIOD_MS) {
+            barcode_reset();
+        }
+        if (following && center >= 0) {
+            barcode_feed(center);
+            char letter = barcode_take();
+            if (letter != 0) { last_barcode = barcode_id(letter); }
+        }
+        previous_tick = time.lo;
+        was_following = following;
+
+        LF_CMD command;
+        line_decide(left, center, right, &steering, &command);
+        __atomic_store_n(&sampler_stage, S3_SUBMIT_LINE, __ATOMIC_RELAXED);
+        vehicle_submit_line(left, center < 0 ? 0 : center, right,
+                            command.left, command.right, command.stop, last_barcode);
     }
 }
