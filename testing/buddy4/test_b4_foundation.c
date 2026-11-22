@@ -166,9 +166,10 @@ static void test_event_representation_and_encoding(void)
 	event.type = UINT8_C(0xFF);
 	CHECK(b4_event_is_valid(&event) == 0U);
 
-	event.type = B4_EVENT_COLLISION;
-	event.flags = B4_EVENT_FLAG_VALUE_VALID;
-	event.value = -2500;
+	event.type = B4_EVENT_LIFT_OR_OVERTURN;
+	event.flags = 0U;
+	event.value = 0;
+	CHECK(b4_event_is_valid(&event) != 0U);
 	CHECK(b4_event_encode(&event, encoded, sizeof(encoded) - 1U)
 	      == B4_EVENT_STATUS_BUFFER_TOO_SMALL);
 	CHECK(b4_event_decode(encoded, sizeof(encoded) - 1U, &decoded)
@@ -179,15 +180,15 @@ static void test_event_representation_and_encoding(void)
 	CHECK(b4_event_encode(&event, encoded, sizeof(encoded))
 	      == B4_EVENT_STATUS_INVALID_EVENT);
 
-	event.flags = B4_EVENT_FLAG_VALUE_VALID;
-	event.value = -2500;
+	event.value = 0;
 	CHECK(b4_event_encode(&event, encoded, sizeof(encoded))
 	      == B4_EVENT_STATUS_OK);
-	encoded[4] = UINT8_C(0xFF);
+	encoded[4] = B4_EVENT_RESERVED_06;
 	CHECK(b4_event_decode(encoded, sizeof(encoded), &decoded)
 	      == B4_EVENT_STATUS_INVALID_EVENT);
 
 	event.type = B4_EVENT_TERRAIN_START;
+	event.flags = B4_EVENT_FLAG_VALUE_VALID;
 	event.value = 1200;
 	CHECK(b4_event_is_valid(&event) != 0U);
 	event.type = B4_EVENT_CALIBRATION_READY;

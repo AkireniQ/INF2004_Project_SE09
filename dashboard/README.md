@@ -28,7 +28,7 @@ The Pico must run the MQTT firmware (`make NET=lwip MQTT=1`), not the normal non
 - **Connection:** live heartbeat age, Wi-Fi/broker/subscription flags and bridge drop flags.
 - **Commands/events:** exact binary START/STOP, Pico acknowledgment and a bounded connection/mission/fault event list.
 
-All values come from received MQTT payloads. The current two-sensor Pico configuration leaves the centre flag unset; an unset flag does not prove a centre sensor is installed or reading white. Barcode decoding is currently disabled. Terrain and obstacle producers are not connected in the normal firmware, so those cards correctly stay **No data** until real producers submit valid measurements. They do not display invented zeros.
+All values come from received MQTT payloads. In the motion recovery firmware the outer IR channels steer, and the centre ADC channel reads the barcode. The dashboard displays the latest decoded A–D barcode. The terrain and obstacle cards show **No data** until a producer submits a valid measurement.
 
 The matching diagnostics firmware additionally publishes normalized IR darkness, target RPM, controller stop reason and telemetry-drop count on `/controller`. Older firmware does not publish these fields. Raw ADC values, tilt, turn rate and total distance remain unavailable. Wheel progress is counts for bounded moves, not cumulative distance. The global speed level is a legacy selection, not the per-wheel fine-RPM target. A displayed mission state reports controller intent; actual wheel RPM reports measured motion.
 
@@ -38,7 +38,7 @@ Each telemetry channel independently expires after 2 seconds without a valid liv
 
 Heartbeat expires after 15 seconds. START is available only when the broker/subscriptions and a fresh heartbeat confirm all connection flags. The Pico may still reject START due to startup delay, stale line data, a junction stop or fault. STOP stays available while the local server has a broker connection. No command is retained; the server does not replay commands after reconnect.
 
-The Pico ACK confirms acceptance for processing, not physical movement. Inspect mission state, wheel RPM and faults after commanding START. The first-junction halt remains intentional; barcode turns, obstacle bypass and complete-track navigation remain unimplemented in the current Pico firmware.
+The Pico ACK confirms acceptance for processing. Inspect mission state, measured wheel RPM and faults to confirm movement. During an obstacle detour the mission state shows Avoiding, then Recover line before returning to Follow line. The obstacle card shows the latest profile. A started mission uses local sensor feedback if MQTT goes offline. Dashboard commands require a live connection.
 
 MQTT QoS 0 does not guarantee delivery. The browser reports uncertainty if its HTTP request times out. Faults need investigation before a new START. This is a local dashboard with Host/Origin and command-token checks, bound to loopback; it is not designed for public Internet exposure. Broker TLS/auth configuration is not added by this dashboard or the current Pico MQTT client.
 
@@ -55,7 +55,8 @@ Subscriptions use the configured root and these suffixes:
 | `motion` |9| S2_STATUS packed bits: mode0:2, level2:3, faults5:4, L RPM9:9, R RPM18:9, L PWM27:7, R PWM34:7, L progress41:13, R progress54:13 |
 | `line` |1| L/C/R black bits0/1/2, barcode bits3..5 |
 | `terrain` |2| height0:11, phase11:3 |
-| `obstacle` |6| nearest0:12, width12:11, left23:12, right35:12 |
+| `obstacle` |6| nearest0:12, width12:11, left23:12, right35:12. Width 2047 and side 4095 mean unavailable. Side 4094 means open. |
+| `sonar` |4| latest forward range0:12, phase12:5, failed phase17:5, detour failure22:4. Range 4094 means open and 4095 means unavailable. Reported once per second. |
 
 Bit numbering starts at the least significant bit of byte0. Fields use the firmware's little-endian packing. `offset:width` notation is used above. `mqtt_protocol.py` validates lengths, ranges and unused bits before displaying telemetry. START publishes `0x01`, STOP `0x00`, and stopped-only RESET `0x02` to `/command`, QoS0, non-retained. Strings such as `START` are not valid Pico commands.
 
@@ -80,8 +81,8 @@ Set `BUDDY1_MOSQUITTO` or `BUDDY1_BROWSER` if executable paths are not discovera
 
 Replace both the dashboard and Pico firmware with matching current versions. A heartbeat confirms network connectivity, not that the motors and sensors are ready. The Vehicle controller panel reports the actual START blocker. Wait at least five seconds after power-up and start on a straight section, not a crossing. Read the named blocker before resetting faults. If it says diagnostics unavailable, the Pico is running older firmware or the topic root does not match. Send the blocker text and IR/target values for diagnosis; a generic one-byte rejected ACK alone cannot identify the cause.
 
-## Reset a motor fault
+## Reset a stopped fault
 
-With matching timing/reset firmware, a stopped motor fault enables **Reset fault**. Press it once and wait for the ACK and IDLE state, then press START separately. It never resumes automatically. If a timing fault returns, capture the displayed **Gap / limit** numbers before clearing it. A timing gap over the configured limit still stops the car.
+With current firmware and a live command connection, a stopped motor or controller fault enables **Reset fault**. Press it once and wait for the ACK and IDLE state. After a failed detour, put the car back on a straight section of tape before pressing START separately. If a timing fault returns, capture the displayed **Gap / limit** numbers before clearing it.
 
 The command is binary02; accepted RESET ACK04, rejected RESET ACK06. Existing START/STOP bytes are unchanged. Controller diagnostics version2 has31 bytes and adds reset-pending, latched timing gap and limit; older version1/25-byte diagnostics still display but cannot enable RESET. Raw ADC values and total distance remain unreported.

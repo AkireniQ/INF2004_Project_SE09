@@ -33,8 +33,8 @@ EXPORT void subsystem4_test(void)
 	TEST_CHECK("INT-02", s4_lines_received >= before + 2,
 		   "summary lines flow from subsystem 3 to subsystem 4");
 
-	TEST_CHECK("S4-HW01", b4_i2c_probe_start() == E_OK,
-		   "periodic I2C probe task started");
+	TEST_CHECK("S4-U07", b4_runtime_is_started() != 0U,
+		   "production 100 Hz IMU runtime starts with subsystem 4");
 
 	TEST_SUMMARY("subsystem4");
 }

@@ -34,6 +34,12 @@ bool motion_backward(void);
 bool motion_set_wheel_levels(unsigned left,unsigned right);
 /* Forward wheel targets: even RPM values 0..126, zero stops that wheel. */
 bool motion_set_wheel_rpm(unsigned left,unsigned right);
+bool motion_set_wheel_rpm_tracked(unsigned left,unsigned right,uint16_t *command);
+/* Obstacle avoidance uses a separate low-speed bounded move. A zero
+   distance selects a 90-degree pivot, with true selecting right. */
+bool motion_maneuver(unsigned distance_mm,bool right,uint16_t *command);
+bool motion_maneuver_reverse(unsigned distance_mm,uint16_t *command);
+bool motion_arc(bool right,uint16_t *command);
 bool motion_move_forward_mm(unsigned mm); /* 1..2000; 0 no-op */
 bool motion_move_backward_mm(unsigned mm);
 bool motion_turn_left(unsigned steps); /* 1..8 = 45..360 degrees */
@@ -51,4 +57,5 @@ enum { S2_REPLY_NONE,S2_REPLY_OK,S2_REPLY_STALE,S2_REPLY_SETTLING,
        S2_REPLY_FAULT,S2_REPLY_BUSY,S2_REPLY_ZERO_SPEED,S2_REPLY_INVALID };
 typedef struct { uint32_t sequence,age_ms;uint16_t command;uint8_t reason;bool accepted; } S2_REPLY;
 bool motion_get_reply(S2_REPLY *out);
+bool motion_get_feedback(S2_STATUS *status,S2_REPLY *result,bool *busy);
 #endif

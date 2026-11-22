@@ -59,11 +59,41 @@ bool motion_decrease_speed(void){return submit(S2_DEC,0);}
 bool motion_forward(void){return submit(S2_FORWARD,0);}
 bool motion_backward(void){return submit(S2_BACKWARD,0);}
 bool motion_set_wheel_levels(unsigned l,unsigned r){if(l>4||r>4)return false;if(!l&&!r)return motion_set_speed(0);return submit(S2_WHEELS,l|(r<<3));}
-bool motion_set_wheel_rpm(unsigned l,unsigned r)
+static bool set_wheel_rpm(unsigned l,unsigned r,uint16_t *command)
 {
     if(l>126u || r>126u || (l&1u) || (r&1u))return false;
     if(!l&&!r){motion_stop();return true;}
-    return submit(S2_WHEEL_RPM,(l/2u)|((r/2u)<<6));
+    unsigned arg=(l/2u)|((r/2u)<<6);
+    if(!submit(S2_WHEEL_RPM,arg))return false;
+    if(command)*command=(uint16_t)(S2_WHEEL_RPM|(arg<<4));
+    return true;
+}
+bool motion_set_wheel_rpm(unsigned l,unsigned r){return set_wheel_rpm(l,r,NULL);}
+bool motion_set_wheel_rpm_tracked(unsigned l,unsigned r,uint16_t *command)
+{
+    return command && (l||r) && set_wheel_rpm(l,r,command);
+}
+static bool submit_maneuver(unsigned arg,uint16_t *command)
+{
+    if(!command || !submit(S2_MANEUVER,arg))return false;
+    *command=(uint16_t)(S2_MANEUVER|(arg<<4));
+    return true;
+}
+bool motion_maneuver(unsigned distance_mm,bool right,uint16_t *command)
+{
+    if(distance_mm>MAX_DISTANCE_MM)return false;
+    return submit_maneuver(distance_mm ? distance_mm : S2_MANEUVER_TURN|(unsigned)right,command);
+}
+bool motion_maneuver_reverse(unsigned distance_mm,uint16_t *command)
+{
+    return distance_mm && distance_mm<=MAX_DISTANCE_MM &&
+           submit_maneuver(S2_MANEUVER_REVERSE_BASE+distance_mm,command);
+}
+bool motion_arc(bool right,uint16_t *command)
+{
+    if(!command || !submit(S2_ARC,right))return false;
+    *command=(uint16_t)(S2_ARC|((unsigned)right<<4));
+    return true;
 }
 bool motion_move_forward_mm(unsigned n){return n<=MAX_DISTANCE_MM && (n?submit(S2_MOVE_F,n):motion_ready());}
 bool motion_move_backward_mm(unsigned n){return n<=MAX_DISTANCE_MM && (n?submit(S2_MOVE_B,n):motion_ready());}
@@ -120,4 +150,16 @@ bool motion_get_reply(S2_REPLY *out)
 {
     if(!transport_lock||!out)return false;
     lock_transport();*out=reply;bool ready=q.ready;unlock_transport();return ready;
+}
+
+bool motion_get_feedback(S2_STATUS *status,S2_REPLY *result,bool *busy)
+{
+    if(!transport_lock || !status || !busy)return false;
+    lock_transport();
+    *status=cached;
+    if(result)*result=reply;
+    *busy=q.count||q.stop||q.processing||s2_get_bits(&cached,0,2)!=0;
+    bool ready=q.ready;
+    unlock_transport();
+    return ready;
 }

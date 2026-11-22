@@ -56,6 +56,15 @@
 #include "app.h"
 #include "vehicle_controller/vehicle_controller.h"
 
+#if APP_S5_BENCH || APP_IR_BENCH
+#include "subsystem2/motion_hw.h"
+#elif APP_MOTION_AUTOTEST
+IMPORT ER subsystem2_autotest_start(void);
+#endif
+#if APP_IR_BENCH
+#include "subsystem3/subsystem3.h"
+#endif
+
 /*
  * Create and start one task (declared in app.h for every subsystem).
  *   prc = TP_PRC1 (core 0), TP_PRC2 (core 1), or 0 for "any core".
@@ -95,6 +104,22 @@ EXPORT ID app_start_task(FP entry, PRI pri, UW prc, const char *name)
 
 EXPORT INT usermain(void)
 {
+#if APP_IR_BENCH
+	s2_hw_safe_outputs();
+	ir_bench_run();
+	for (;;) { (void)tk_slp_tsk(TMO_FEVR); }
+#elif APP_S5_BENCH
+	s2_hw_safe_outputs();
+	CHECK(subsystem5_start(), "sonar bench startup");
+	for (;;) { (void)tk_slp_tsk(TMO_FEVR); }
+#elif APP_MOTION_AUTOTEST
+	ER result = subsystem2_init();
+	if (result >= E_OK) {
+		result = subsystem2_autotest_start();
+	}
+	CHECK(result, "motion autotest startup");
+	for (;;) { (void)tk_slp_tsk(TMO_FEVR); }
+#else
 	T_RVER	ver;
 
 	/* tk_ref_ver: ask the kernel who it is */
@@ -112,9 +137,7 @@ EXPORT INT usermain(void)
 	CHECK(subsystem1_init(), "subsystem1_init");
 	CHECK(subsystem2_init(), "subsystem2_init");
 	CHECK(subsystem3_init(), "subsystem3_init");
-#if APP_TEST
 	CHECK(subsystem4_init(), "subsystem4_init");
-#endif
 	CHECK(subsystem5_init(), "subsystem5_init");
 
 	ER vc_er = vehicle_init();
@@ -126,9 +149,7 @@ EXPORT INT usermain(void)
 	CHECK(subsystem1_start(), "subsystem1_start");
 	CHECK(subsystem2_start(), "subsystem2_start");
 	CHECK(subsystem3_start(), "subsystem3_start");
-#if APP_TEST
 	CHECK(subsystem4_start(), "subsystem4_start");
-#endif
 	CHECK(subsystem5_start(), "subsystem5_start");
 
 	tm_printf((UB*)"all subsystems started\n\n");
@@ -149,4 +170,5 @@ EXPORT INT usermain(void)
 	/* Sleep forever.  Returning from usermain() would shut down. */
 	tk_slp_tsk(TMO_FEVR);
 	return 0;
+#endif
 }

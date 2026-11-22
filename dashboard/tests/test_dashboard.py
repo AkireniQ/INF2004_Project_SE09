@@ -175,6 +175,40 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual([entry[1] for entry in self.dashboard.client.sent], [b"\x01", b"\x00"])
         self.assertEqual(self.command("restart")[0], 400)
 
+    def test_detour_fault_allows_stopped_reset_but_blocks_start_until_repositioned(self):
+        def publish(topic, payload):
+            self.dashboard.on_message(None, None, SimpleNamespace(
+                topic=f"{self.dashboard.root}/{topic}", payload=payload, retain=False))
+
+        diagnostic = bytearray(31)
+        diagnostic[:5] = bytes((2, 5, 6, 8, 1 | 2 | 64))  # Detour FAULT, no motor fault.
+        publish("controller", diagnostic)
+        publish("motion", b"\x01" + bytes(8))
+        self.assertEqual(self.command("reset")[0], 503)
+        status, body, _ = self.command("start")
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)["error"], "Car must be put back on the tape")
+        publish("motion", bytes(9))
+        self.assertTrue(self.dashboard.snapshot()["reset_allowed"])
+        self.assertEqual(self.command("stop")[0], 200)
+
+        diagnostic[1:3] = bytes((0, 1))  # STOP leaves the detour fault latched.
+        publish("controller", diagnostic)
+        self.assertEqual(self.command("reset")[0], 200)
+        diagnostic[4] |= 128
+        publish("controller", diagnostic)
+        self.assertEqual(self.command("reset")[0], 503)
+
+        diagnostic[2] = 0  # Reset ended in IDLE. The car is still off the tape.
+        diagnostic[4] &= ~128
+        publish("controller", diagnostic)
+        self.assertEqual(self.command("reset")[0], 503)
+        self.assertEqual(self.command("start")[0], 503)
+        self.assertEqual([entry[1] for entry in self.dashboard.client.sent], [b"\x00", b"\x02"])
+        diagnostic[3] = 0
+        publish("controller", diagnostic)
+        self.assertEqual(self.command("start")[0], 200)
+
     def test_origin_host_token_and_content_type(self):
         self.assertEqual(self.command("start", Origin="http://example.com")[0], 403)
         self.assertEqual(self.command("start", Host="evil.example")[0], 403)

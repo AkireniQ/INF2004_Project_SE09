@@ -3,7 +3,27 @@ STATES = ('IDLE', 'FOLLOW_LINE', 'TURNING', 'AVOIDING', 'RECOVER_LINE', 'FAULT')
 MOTOR_MODES = ('IDLE', 'VELOCITY', 'DISTANCE', 'TURN')
 MOTOR_FAULTS = ((1, 'Encoder counts'), (2, 'Control timing'), (4, 'Wheel stalled'), (8, 'Command timeout'))
 VEHICLE_FAULTS = ((1, 'Motor'), (2, 'Encoder'), (4, 'IMU'), (8, 'Ultrasonic echo'), (16, 'Wi-Fi'))
-TELEMETRY_TOPICS = ('vehicle', 'motion', 'line', 'terrain', 'obstacle', 'controller')
+TELEMETRY_TOPICS = ('vehicle', 'motion', 'line', 'terrain', 'obstacle', 'controller', 'sonar')
+START_BLOCK_REPOSITION = 8
+STOP_REASON_OPERATOR = 1
+STOP_REASONS = (
+    None, 'Operator STOP received.', 'Line follower requested a stop.',
+    'Pico lost valid local IR samples.', 'Motor control fault.',
+    'Command connection lost.', 'Obstacle avoidance stopped the car.',
+)
+AVOIDANCE_PHASES = (
+    'idle', 'scanning ahead', 'turning off the tape', 'leaving the tape', 'aligning for the bypass',
+    'passing the obstacle', 'turning toward the tape', 'searching for the tape', 'centring on the tape',
+    'realigning with the tape', 'aligning to pass farther', 'complete', 'stopped',
+    'confirming the tape', 'backing up', 'waiting for a route', 'checking side clearance',
+)
+AVOIDANCE_FAILURES = (
+    None, 'Obstacle scan timed out', 'Obstacle could not be confirmed', 'Width could not be confirmed',
+    'Too little room to turn', 'Side clearance too small', 'No usable sonar echo',
+    'Obstacle too close or clearance travel exhausted', 'Motor maneuver failed', 'Tape could not be reacquired',
+    'Operator stopped the detour', 'Controller interlock stopped the detour', 'Maneuver timed out',
+    'Left edge outside scan limits', 'Right edge outside scan limits', 'Both edges outside scan limits',
+)
 
 def command_payload(command):
     if command == 'start': return b'\x01'
@@ -12,20 +32,20 @@ def command_payload(command):
     raise ValueError('command must be start, stop or reset')
 
 def decode_telemetry(kind, payload):
-    sizes = dict(vehicle=1, motion=9, line=1, terrain=2, obstacle=6, controller=25)
+    sizes = dict(vehicle=1, motion=9, line=1, terrain=2, obstacle=6, controller=25, sonar=4)
     if kind not in sizes or len(payload) not in ((25,31) if kind=='controller' else (sizes[kind],)):
         raise ValueError('Incorrect binary telemetry length')
     word = int.from_bytes(payload, 'little')
     def bits(offset, width): return (word >> offset) & ((1 << width) - 1)
     if kind == 'controller':
-        if (payload[0],len(payload)) not in ((1,25),(2,31)) or payload[1] >= len(STATES) or payload[2] > 6 or payload[3] > 8 or payload[24] > 8 or (payload[0]==1 and payload[4] & 128) or payload[5] > 15:
+        if (payload[0],len(payload)) not in ((1,25),(2,31)) or payload[1] >= len(STATES) or payload[2] >= len(STOP_REASONS) or payload[3] > 8 or payload[24] > 8 or (payload[0]==1 and payload[4] & 128) or payload[5] > 15:
             raise ValueError('Invalid controller diagnostics')
         raw = [int.from_bytes(payload[i:i+2], 'little') for i in (6,8,10)]
         if max(raw)>1000 or max(payload[12:14])>126 or any(x%2 for x in payload[12:14]):
             raise ValueError('Invalid controller sensor or target range')
         blocks = ('Ready for START', 'Motor startup not ready', 'Wi-Fi/MQTT not ready',
                   'Motor fault latched', 'STOP / reset pending', 'No valid IR readings',
-                  'IR readings are stale', 'Junction / line stop latched', 'Obstacle blocks the path')
+                  'IR readings are stale', 'Junction / line stop latched', 'Car must be put back on the tape')
         hints = ('Controller start checks pass.', 'Wait at least five seconds after powering the Pico.',
                  'Wait for Wi-Fi, broker and command subscription.',
                  'Inspect motor faults before resetting or restarting.',
@@ -33,9 +53,10 @@ def decode_telemetry(kind, payload):
                  'Check the IR sensor AO connections and ADC read errors on USB serial.',
                  'The sensor task is not supplying fresh data; inspect USB serial.',
                  'Place the car on a straight away from crossings, then restart the Pico. The junction test remains halted until restart.',
-                 'Clear the obstacle interlock through its producer before retrying START.')
+                 'Place the car on a straight section of tape before retrying START.')
         age = int.from_bytes(payload[14:16], 'little')
-        return dict(state=STATES[payload[1]], stop_reason=payload[2], start_block=payload[3],
+        return dict(state=STATES[payload[1]], stop_reason=payload[2], stop_reason_label=STOP_REASONS[payload[2]],
+                    start_block=payload[3],
                     start_block_label=blocks[payload[3]], start_hint=hints[payload[3]],
                     motor_ready=bool(payload[4]&1), line_valid=bool(payload[4]&2),
                     line_stop=bool(payload[4]&4), obstacle_blocked=bool(payload[4]&8),
@@ -76,8 +97,23 @@ def decode_telemetry(kind, payload):
         height, phase = bits(0, 11), bits(11, 3)
         if word >> 14 or height > 2000 or phase > 5: raise ValueError('Invalid terrain payload')
         return dict(height_mm=height, phase=phase)
+    if kind == 'sonar':
+        forward, phase, failed_phase, failure = bits(0, 12), bits(12, 5), bits(17, 5), bits(22, 4)
+        if (word >> 26 or (4000 < forward < 4094) or max(phase, failed_phase) >= len(AVOIDANCE_PHASES)):
+            raise ValueError('Invalid sonar diagnostics')
+        return dict(forward_mm='Open' if forward == 4094 else None if forward == 4095 else forward,
+                    phase=AVOIDANCE_PHASES[phase], failed_phase=AVOIDANCE_PHASES[failed_phase],
+                    failure=AVOIDANCE_FAILURES[failure])
     fields = dict(nearest_mm=bits(0, 12), width_mm=bits(12, 11),
                   left_mm=bits(23, 12), right_mm=bits(35, 12))
-    if word >> 47 or fields['width_mm'] > 2000 or max(fields['nearest_mm'], fields['left_mm'], fields['right_mm']) > 4000:
+    if (word >> 47 or fields['nearest_mm'] > 4000 or
+            (fields['width_mm'] > 2000 and fields['width_mm'] != 2047)):
         raise ValueError('Invalid obstacle payload')
+    if fields['width_mm'] == 2047:
+        fields['width_mm'] = None
+    for side in ('left_mm', 'right_mm'):
+        if fields[side] in (4094, 4095):
+            fields[side] = 'Open' if fields[side] == 4094 else None
+        elif fields[side] > 4000:
+            raise ValueError('Invalid obstacle payload')
     return fields

@@ -10,6 +10,7 @@
 #define SUBSYSTEM4_H
 
 #include "../app.h"
+#include "b4_processor.h"
 
 #define S4_PRI_MONITOR		18	/* priority band 18-19 (TEAM.md) */
 #define S4_ALARM_MS		2000	/* report anyway if nothing for 2 s */
@@ -29,5 +30,9 @@ IMPORT ID	alm_monitor;
 IMPORT UW	s4_lines_received;	/* for the tests */
 IMPORT void	monitor_task(INT stacd, void *exinf);
 IMPORT void	monitor_alarm_handler(void *exinf);
+
+/* Read-only snapshot for Buddy 1/MQTT consumers and dashboard integration.
+ * Returns a copy; valid once the Buddy 4 IMU processor has produced output. */
+IMPORT uint8_t b4_get_snapshot(B4_PROCESSOR_OUTPUT *out);
 
 #endif /* SUBSYSTEM4_H */

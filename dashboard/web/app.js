@@ -151,7 +151,7 @@ function drawTelemetry(data) {
   text("controller-detail", controller ? `IR darkness L/C/R: ${controller.left_dark} / ${controller.centre_dark} / ${controller.right_dark}. Target RPM L/R: ${controller.left_target_rpm} / ${controller.right_target_rpm}. Telemetry drops: ${controller.telemetry_drops}.` : "Waiting for live controller diagnostics.");
   const vehicle = topics.vehicle?.data;
   const motion = topics.motion?.data;
-  const line = topics.line?.data;
+  const line = topics.line?.fresh ? topics.line.data : null;
   const terrain = topics.terrain?.data;
   const obstacle = topics.obstacle?.data;
   text("mission-state", vehicle?.state.replaceAll("_", " "));
@@ -162,8 +162,25 @@ function drawTelemetry(data) {
     TURNING: "A turning mission state was reported.", AVOIDING: "An avoidance mission state was reported.",
     RECOVER_LINE: "A line-recovery mission state was reported."
   };
-  text("mission-description", vehicle ? topics.vehicle.fresh ? descriptions[vehicle.state] : "Last report only. Waiting for live mission telemetry." : "Waiting for a mission-state report.");
+  const stopped = vehicle?.state === "IDLE" || vehicle?.state === "FAULT";
+  const stopReason = stopped && diagnostic?.fresh && controller.state === vehicle.state
+    ? controller.stop_reason_label : null;
+  text("mission-description", vehicle ? topics.vehicle.fresh ? stopReason ?? descriptions[vehicle.state] : "Last report only. Waiting for live mission telemetry." : "Waiting for a mission-state report.");
   faultList("vehicle-faults", vehicle?.fault_labels ?? [], Boolean(vehicle));
+  const sonar = topics.sonar?.fresh ? topics.sonar.data : null;
+  const scanning = sonar?.phase === "checking side clearance" || sonar?.phase === "scanning ahead";
+  const bypassing = ["turning off the tape", "leaving the tape", "aligning for the bypass",
+    "passing the obstacle", "turning toward the tape", "searching for the tape", "centring on the tape",
+    "realigning with the tape", "confirming the tape"].includes(sonar?.phase);
+  const forward = typeof sonar?.forward_mm === "number" ? sonar.forward_mm + " mm" : sonar?.forward_mm ?? "Unavailable";
+  const detour = sonar?.failure ? " · " + sonar.failure + " while " + sonar.failed_phase : "";
+  let sonarActivity = "Latest forward sonar: " + forward;
+  if (scanning) sonarActivity = "Sonar scan in progress";
+  else if (bypassing) sonarActivity = "Bypass in progress · " + sonar.phase;
+  else if (sonar?.phase === "complete" && sonar.forward_mm == null && vehicle?.state === "FOLLOW_LINE")
+    sonarActivity = "Tape reacquired. Waiting for forward sonar.";
+  el("sonar-detail").hidden = sonar === null;
+  text("sonar-detail", sonar ? sonarActivity + detour : null);
   faultList("motor-faults", motion?.fault_labels ?? [], Boolean(motion));
   if (motion?.faults & 2 && controller?.timing_gap_us != null) {
     el("motor-faults").textContent += ` · Gap ${(controller.timing_gap_us/1000).toFixed(2)} ms / limit ${(controller.timing_limit_us/1000).toFixed(2)} ms`;
@@ -184,7 +201,8 @@ function drawTelemetry(data) {
   text("terrain-height", terrain?.height_mm);
   text("terrain-phase", terrain?.phase);
   for (const [id, key] of [["nearest", "nearest_mm"], ["width", "width_mm"], ["left", "left_mm"], ["right", "right_mm"]]) {
-    text("obstacle-" + id, obstacle ? obstacle[key] + " mm" : null);
+    const value = obstacle?.[key];
+    text("obstacle-" + id, typeof value === "number" ? value + " mm" : value);
   }
   const history = data?.motion_history ?? [];
   const maximum = Math.max(30, ...history.flatMap(p => [p.left_rpm, p.right_rpm]));
