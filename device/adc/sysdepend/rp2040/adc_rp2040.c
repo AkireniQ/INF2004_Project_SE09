@@ -57,13 +57,13 @@ void adc_inthdr( UINT intno)
 	BOOL	done = FALSE;
 
 	ADC_LOCK(intsts);
-	if(ll_devcb.active && ll_devcb.buf != NULL) {
+	if(ll_devcb.active && ll_devcb.buf != NULL && (in_w(ADC_FCS) & ADC_FCS_LEVEL)) {
 		*ll_devcb.buf = in_w(ADC_FIFO) & 0x0FFF;
 		ll_devcb.asz = 1;
 		ll_devcb.active = FALSE;
 		done = TRUE;
 	}
-	out_w(ADC_INTE, 0);
+	if(!ll_devcb.active) out_w(ADC_INTE, 0);
 	if(done) (void)tk_set_flg(ll_devcb.done_flgid, 1);
 	ADC_UNLOCK(intsts);
 
@@ -73,7 +73,7 @@ void adc_inthdr( UINT intno)
 /*----------------------------------------------------------------------
  * A/D convert
  */
-LOCAL UW adc_convert( INT ch, INT size, UW *buf )
+LOCAL W adc_convert( INT ch, INT size, UW *buf )
 {
 	ER	err;
 	UINT	intsts;
@@ -82,9 +82,16 @@ LOCAL UW adc_convert( INT ch, INT size, UW *buf )
 	if(ch<0 || ch>(ADC_CH_NUM-1)) return E_PAR;
 	if(size != 1) return E_PAR;
 
-	while((in_w(ADC_CS)&ADC_CS_READY)==0);
-
 	ADC_LOCK(intsts);
+	if((in_w(ADC_CS) & ADC_CS_READY) == 0) {
+		ADC_UNLOCK(intsts);
+		return E_TMOUT;
+	}
+	/* A conversion can complete just after a wait timed out. Discard its
+	   result before arming an interrupt for a different input channel. */
+	out_w(ADC_INTE, 0);
+	while(in_w(ADC_FCS) & ADC_FCS_LEVEL) (void)in_w(ADC_FIFO);
+	ClearInt(INTNO_ADC);
 	(void)tk_clr_flg(ll_devcb.done_flgid, 0);
 	ll_devcb.buf = buf;
 	ll_devcb.asz = 0;
@@ -99,12 +106,22 @@ LOCAL UW adc_convert( INT ch, INT size, UW *buf )
 			 TWF_ORW | TWF_BITCLR, &flgptn, DEVCNF_ADC_TMOSCAN);
 
 	ADC_LOCK(intsts);
-	if(err < E_OK && ll_devcb.active) {
+	if(err == E_TMOUT) {
+		/* Only this request can have filled the FIFO since it was drained
+		   before arming. An interrupt that arrived late can still leave
+		   a usable result for this channel. */
+		if(ll_devcb.active && (in_w(ADC_FCS) & ADC_FCS_LEVEL)) {
+			*buf = in_w(ADC_FIFO) & 0x0FFF;
+			ll_devcb.asz = 1;
+		}
+		if(ll_devcb.asz == 1) err = E_OK;
+	}
+	if(ll_devcb.active) {
 		out_w(ADC_INTE, 0);
 		ll_devcb.active = FALSE;
-		ll_devcb.buf = NULL;
 	}
 	if(err == E_OK) err = (ll_devcb.asz == 1)? 1: E_IO;
+	ll_devcb.buf = NULL;
 	ADC_UNLOCK(intsts);
 
 	return err;

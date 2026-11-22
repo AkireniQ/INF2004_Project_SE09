@@ -47,7 +47,7 @@
 /* Interrupt t priority */
 #define	DEVCNF_ADC_INTPRI	2
 
-/* A/D conversion timeout time */
-#define	DEVCNF_ADC_TMOSCAN	1000
+/* Bound a missed conversion interrupt to two kernel ticks. */
+#define	DEVCNF_ADC_TMOSCAN	(2 * CNF_TIMER_PERIOD)
 
 #endif		/* __DEV_ADC_CNF_RP2040_H__ */

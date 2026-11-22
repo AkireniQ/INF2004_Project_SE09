@@ -9,6 +9,9 @@
 #define S1_FAULT_IMU 4u
 #define S1_FAULT_NO_ECHO 8u
 #define S1_FAULT_WIFI 16u
+#define S1_WIDTH_UNAVAILABLE 2047u
+#define S1_CLEARANCE_OPEN 4094u
+#define S1_CLEARANCE_UNAVAILABLE 4095u
 
 /* v2 commands: one octet. 00 STOP, 01 START, 02 stopped-only RESET.
  * Exactly one byte; values above2 are invalid. No text payloads. */

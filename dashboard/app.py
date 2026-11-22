@@ -20,7 +20,9 @@ import time
 from urllib.parse import urlsplit
 import uuid
 
-from mqtt_protocol import command_payload, decode_telemetry, TELEMETRY_TOPICS
+from mqtt_protocol import (
+    command_payload, decode_telemetry, START_BLOCK_REPOSITION, STOP_REASON_OPERATOR, TELEMETRY_TOPICS,
+)
 
 HEARTBEAT_TIMEOUT = 15.0
 TELEMETRY_TIMEOUT = 2.0
@@ -181,24 +183,28 @@ class Dashboard:
             age = None if self.heartbeat_at is None else max(0, self.clock() - self.heartbeat_at)
             fresh = age is not None and age <= HEARTBEAT_TIMEOUT
             flags = self.last_status or 0
-            ready = self.broker_connected and self.monitor_ready and fresh and flags & 7 == 7
+            link_ready = self.broker_connected and self.monitor_ready and fresh and flags & 7 == 7
             controller = self.telemetry.get('controller')
             controller_live = bool(controller and controller['session_valid'] and self.broker_connected and
                                    self.clock()-controller['received_at']<=TELEMETRY_TIMEOUT)
-            if controller_live and controller['data']['start_block']:
-                ready = False
+            diagnostics = controller['data'] if controller_live else {}
+            motion = self.telemetry['motion']
+            stopped = (motion and motion['session_valid'] and
+                       self.clock() - motion['received_at'] <= TELEMETRY_TIMEOUT and motion['data']['mode'] == 0)
+            recoverable = diagnostics and (
+                diagnostics['state'] == 'FAULT' or diagnostics['motor_faults'] or
+                (diagnostics['start_block'] == START_BLOCK_REPOSITION and
+                 diagnostics['stop_reason'] == STOP_REASON_OPERATOR)
+            )
+            reset_allowed = (link_ready and stopped and recoverable and diagnostics['reset_supported'] and
+                             diagnostics['state'] in ('IDLE', 'FAULT') and not diagnostics['start_pending'] and
+                             not diagnostics['stop_pending'] and not diagnostics['reset_pending'])
             return {
                 "broker": self.broker, "broker_port": self.broker_port, "root": self.root,
                 "broker_connected": self.broker_connected, "monitor_ready": self.monitor_ready,
-                "error": self.error, "start_allowed": bool(ready),
+                "error": self.error, "start_allowed": bool(link_ready and not diagnostics.get('start_block')),
                 "stop_allowed": self.broker_connected,
-                "reset_allowed": bool(controller_live and fresh and flags & 7 == 7 and
-                                      controller['data']['reset_supported'] and
-                                      controller['data']['motor_faults'] and not controller['data']['reset_pending'] and
-                                      controller['data']['state'] in ('IDLE','FAULT') and
-                                      self.telemetry['motion'] and self.telemetry['motion']['session_valid'] and
-                                      self.clock()-self.telemetry['motion']['received_at']<=TELEMETRY_TIMEOUT and
-                                      self.telemetry['motion']['data']['mode']==0),
+                "reset_allowed": bool(reset_allowed),
                 "pico": {"fresh": fresh, "age": age, "time": self.heartbeat_time,
                          "hex": None if self.last_status is None else f"{flags:02X}",
                          "wifi": bool(flags & 1), "mqtt": bool(flags & 2),
@@ -224,9 +230,12 @@ class Dashboard:
             if self.client is None or not state["broker_connected"]:
                 raise CommandUnavailable("Broker is disconnected. No command was queued.")
             if command == "start" and not state["start_allowed"]:
+                controller = state["telemetry"]["controller"]
+                if controller["fresh"] and controller["data"]["start_block"]:
+                    raise CommandUnavailable(controller["data"]["start_block_label"])
                 raise CommandUnavailable("Wait for a live Pico heartbeat with all connection flags ready.")
             if command == "reset" and not state["reset_allowed"]:
-                raise CommandUnavailable("Reset requires fresh stopped-motor diagnostics and a latched motor fault.")
+                raise CommandUnavailable("Reset requires a stopped car with a fault and a live command connection.")
             result = self.client.publish(self.root + "/command", payload, qos=0, retain=False)
             if result.rc != 0:
                 raise CommandUnavailable("MQTT did not queue the command; check the broker connection.")

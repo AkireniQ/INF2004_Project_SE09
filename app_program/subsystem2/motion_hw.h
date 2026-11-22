@@ -4,6 +4,8 @@
 #define S2_GPIO_EDGE_RISE 8u
 void s2_hw_safe_outputs(void);
 void s2_hw_pwm_init(void);
+void app_rp2040_timebase_init(void);
+ER app_gpio_irq_init(void);
 void s2_hw_pwm_write(unsigned pin,unsigned level);
 uint64_t s2_hw_time_us(void);
 ER s2_hw_encoder_init(void);
