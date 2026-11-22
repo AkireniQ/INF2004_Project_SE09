@@ -40,6 +40,19 @@ static void publish_controller(const VEHICLE_SNAPSHOT *s)
     bytes[29]=s->control_gap_limit_us&255;bytes[30]=s->control_gap_limit_us>>8;
     account((ER)mqtt_bridge_send(MQTT_ROUTE_CONTROLLER,bytes,sizeof(bytes)));
 }
+
+static void publish_sonar(const VEHICLE_SNAPSHOT *s)
+{
+    static uint32_t last_at;
+    if (s->timestamp_ms - last_at < 1000u) return;
+    last_at = s->timestamp_ms;
+    unsigned char bytes[4] = {0};
+    s1_wire_put(bytes, 0, 12, s->obstacle_forward_mm);
+    s1_wire_put(bytes, 12, 5, s->avoidance_phase);
+    s1_wire_put(bytes, 17, 5, s->avoidance_failed_phase);
+    s1_wire_put(bytes, 22, 4, s->avoidance_failure);
+    account((ER)mqtt_bridge_send(MQTT_ROUTE_SONAR, bytes, sizeof(bytes)));
+}
 #endif
 void s1_publish_telemetry(void)
 {
@@ -49,6 +62,7 @@ void s1_publish_telemetry(void)
     unsigned faults=s.motor_faults?S1_FAULT_MOTOR:0;
     if(s.motor_faults&1u)faults|=S1_FAULT_ENCODER;
     if(s.reason==VC_REASON_LINK)faults|=S1_FAULT_WIFI;
+    if(s.obstacle_no_echo)faults|=S1_FAULT_NO_ECHO;
     account(s1_publish_vehicle(s.state,faults));
     publish_controller(&s);
     /* No fabricated zero measurements during startup or absent subsystems. */
@@ -59,7 +73,9 @@ void s1_publish_telemetry(void)
     }
     if(s.terrain_valid && (uint32_t)(s.timestamp_ms-s.terrain_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS)
         account(s1_publish_terrain(s.height_mm,s.terrain_phase));
-    if(s.obstacle_valid && (uint32_t)(s.timestamp_ms-s.obstacle_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS)
+    if(s.obstacle_profile ||
+       (s.obstacle_valid && (uint32_t)(s.timestamp_ms-s.obstacle_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS))
         account(s1_publish_obstacle(s.near_mm,s.width_mm,s.clear_left_mm,s.clear_right_mm));
+    publish_sonar(&s);
 #endif
 }

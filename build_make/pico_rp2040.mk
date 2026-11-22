@@ -91,6 +91,39 @@ ifeq ($(TEST),1)
 TEST_SUFFIX := _test
 endif
 
+MOTION_AUTOTEST ?= 0
+ifneq ($(filter $(MOTION_AUTOTEST),0 1),$(MOTION_AUTOTEST))
+$(error MOTION_AUTOTEST must be 0 or 1)
+endif
+ifeq ($(MOTION_AUTOTEST),1)
+ifneq ($(SMP)$(WIFI)$(NET)$(MQTT)$(TEST),1nonenone00)
+$(error Use SMP=1 WIFI=none NET=none MQTT=0 TEST=0 for the isolated motion autotest)
+endif
+MOTION_SUFFIX := _motion_autotest
+endif
+
+S5_BENCH ?= 0
+ifneq ($(filter $(S5_BENCH),0 1),$(S5_BENCH))
+$(error S5_BENCH must be 0 or 1)
+endif
+ifeq ($(S5_BENCH),1)
+ifneq ($(SMP)$(WIFI)$(NET)$(MQTT)$(TEST)$(MOTION_AUTOTEST),1nonenone000)
+$(error Use SMP=1 WIFI=none NET=none MQTT=0 TEST=0 MOTION_AUTOTEST=0 for the sonar bench)
+endif
+S5_SUFFIX := _s5bench
+endif
+
+IR_BENCH ?= 0
+ifneq ($(filter $(IR_BENCH),0 1),$(IR_BENCH))
+$(error IR_BENCH must be 0 or 1)
+endif
+ifeq ($(IR_BENCH),1)
+ifneq ($(CONSOLE)$(WIFI)$(NET)$(MQTT)$(TEST)$(MOTION_AUTOTEST)$(S5_BENCH),usb_cdcnonenone0000)
+$(error Use CONSOLE=usb_cdc WIFI=none NET=none MQTT=0 TEST=0 MOTION_AUTOTEST=0 S5_BENCH=0 for the IR bench)
+endif
+IR_SUFFIX := _irbench
+endif
+
 ifneq ($(origin BUDDY1_API_TEST),undefined)
 $(error BUDDY1_API_TEST has been removed; use WIFI=cyw43 NET=lwip MQTT=1 BUDDY1_DEMO=1 for the real motion APIs)
 endif
@@ -127,6 +160,12 @@ ifeq ($(CONSOLE)$(CRASH_REPORT),usb_cdc1)
 CRASH_SUFFIX := _crash
 endif
 
+ifeq ($(MOTION_AUTOTEST),1)
+ifneq ($(CRASH_REPORT),0)
+$(error The motion autotest uses GP0/GP1. Use CONSOLE=usb_cdc CRASH_REPORT=0)
+endif
+endif
+
 ifeq ($(BUDDY1_DEMO),1)
 ifneq ($(CRASH_REPORT),0)
 $(error Buddy 2 uses GP0/GP1 encoders; use CONSOLE=usb_cdc CRASH_REPORT=0)
@@ -140,7 +179,7 @@ endif
 # only the banner in the log revealed it.
 #
 #EXE_FILE := mtk3pico_smp$(SMP)_$(CONSOLE)$(WIFI_SUFFIX)$(NET_SUFFIX)$(MQTT_SUFFIX)$(CRASH_SUFFIX)$(TEST_SUFFIX)
-EXE_FILE := mtk3pico_smp$(SMP)_$(CONSOLE)$(WIFI_SUFFIX)$(NET_SUFFIX)$(MQTT_SUFFIX)$(CRASH_SUFFIX)$(DEMO_SUFFIX)$(TEST_SUFFIX)
+EXE_FILE := mtk3pico_smp$(SMP)_$(CONSOLE)$(WIFI_SUFFIX)$(NET_SUFFIX)$(MQTT_SUFFIX)$(CRASH_SUFFIX)$(DEMO_SUFFIX)$(TEST_SUFFIX)$(MOTION_SUFFIX)$(S5_SUFFIX)$(IR_SUFFIX)
 
 GCC := arm-none-eabi-gcc
 AS := arm-none-eabi-gcc
@@ -202,6 +241,9 @@ ASFLAGS += -DCNF_SMP=1
 endif
 #CFLAGS  += -DAPP_TEST=$(TEST)
 CFLAGS  += -DAPP_TEST=$(TEST) -DAPP_BUDDY1_DEMO=$(BUDDY1_DEMO)
+CFLAGS  += -DAPP_MOTION_AUTOTEST=$(MOTION_AUTOTEST)
+CFLAGS  += -DAPP_S5_BENCH=$(S5_BENCH)
+CFLAGS  += -DAPP_IR_BENCH=$(IR_BENCH)
 CFLAGS  += -DTM_CONSOLE_UART=$(CRASH_REPORT)
 ifeq ($(CRASH_REPORT),0)
 CFLAGS  += -DBOARD_UART0_FREE=1
@@ -234,7 +276,7 @@ endif
 # before any recipe executes.
 ################################################################################
 #PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-net$(NET)-mqtt$(MQTT)-crash$(CRASH_REPORT)-test$(TEST)
-PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-net$(NET)-mqtt$(MQTT)-crash$(CRASH_REPORT)-test$(TEST)-b1demo$(BUDDY1_DEMO)
+PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-net$(NET)-mqtt$(MQTT)-crash$(CRASH_REPORT)-test$(TEST)-b1demo$(BUDDY1_DEMO)-motiontest$(MOTION_AUTOTEST)-s5bench$(S5_BENCH)-irbench$(IR_BENCH)
 PROFILE_FILE := .build_profile
 
 ifneq ($(strip $(shell cat $(PROFILE_FILE) 2>/dev/null)),$(PROFILE_ID))

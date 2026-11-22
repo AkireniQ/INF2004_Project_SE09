@@ -33,6 +33,9 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(decode_telemetry('terrain',(125|(2<<11)).to_bytes(2,'little')),dict(height_mm=125,phase=2))
         obstacle=(500|(80<<12)|(200<<23)|(300<<35)).to_bytes(6,'little')
         self.assertEqual(decode_telemetry('obstacle',obstacle),dict(nearest_mm=500,width_mm=80,left_mm=200,right_mm=300))
+        uncertain=(140|(2047<<12)|(4094<<23)|(4095<<35)).to_bytes(6,'little')
+        self.assertEqual(decode_telemetry('obstacle',uncertain),
+                         dict(nearest_mm=140,width_mm=None,left_mm='Open',right_mm=None))
     def test_each_topic_has_independent_freshness(self):
         self.send('motion',motion_packet())
         self.now+=3
@@ -99,11 +102,41 @@ class TelemetryTests(unittest.TestCase):
         self.send('ack',b'\x04');self.assertEqual(self.d.snapshot()['last_ack']['command'],'reset')
         self.send('ack',b'\x06');self.assertTrue(self.d.snapshot()['last_ack']['rejected'])
 
+    def test_controller_stop_reason_distinguishes_local_ir_from_start_interlock(self):
+        packet = bytearray(31)
+        packet[:5] = bytes((2, 5, 3, 2, 1 | 2))
+        self.send('controller', packet)
+        report = self.d.snapshot()['telemetry']['controller']['data']
+        self.assertEqual(report['stop_reason_label'], 'Pico lost valid local IR samples.')
+        self.assertEqual(report['start_block_label'], 'Wi-Fi/MQTT not ready')
+        packet[2] = 6
+        self.send('controller', packet)
+        report = self.d.snapshot()['telemetry']['controller']['data']
+        self.assertEqual(report['stop_reason_label'], 'Obstacle avoidance stopped the car.')
+
+    def test_open_forward_range_and_failed_detour_report_independently(self):
+        packet = bytearray(31)
+        packet[:5] = bytes((2, 5, 6, 8, 1 | 2 | 64))
+        self.send('status', b'\x07')
+        self.send('controller', packet)
+        self.send('sonar', (4094 | (12 << 12) | (16 << 17) | (6 << 22)).to_bytes(4, 'little'))
+        state = self.d.snapshot()
+        self.assertFalse(state['start_allowed'])
+        self.assertEqual(state['telemetry']['controller']['data']['start_block_label'],
+                         'Car must be put back on the tape')
+        self.assertEqual(state['telemetry']['sonar']['data'],
+                         dict(forward_mm='Open', phase='stopped', failed_phase='checking side clearance',
+                              failure='No usable sonar echo'))
+        self.assertIsNone(decode_telemetry('sonar', (4095).to_bytes(4, 'little'))['forward_mm'])
+        for invalid in (4001, 17 << 12, 17 << 17, 1 << 26):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                decode_telemetry('sonar', invalid.to_bytes(4, 'little'))
+
     def test_subscribes_every_topic(self):
         result=[]
         client=SimpleNamespace(subscribe=lambda topics:(result.extend(topics) or (0,1)))
         self.d.on_connect(client,None,None,SimpleNamespace(is_failure=False),None)
         self.assertEqual({topic.rsplit('/',1)[-1] for topic,qos in result},
-                         {'status','ack','motion','line','terrain','obstacle','vehicle','controller'})
+                         {'status','ack','motion','line','terrain','obstacle','vehicle','controller','sonar'})
 
 if __name__=='__main__':unittest.main()

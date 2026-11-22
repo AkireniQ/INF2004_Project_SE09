@@ -44,12 +44,18 @@ int s1_wire_terrain(unsigned char out[2], unsigned height_mm, unsigned phase)
     return 1;
 }
 
+static int valid_clearance(unsigned mm)
+{
+    return mm <= 4000u || mm == S1_CLEARANCE_OPEN || mm == S1_CLEARANCE_UNAVAILABLE;
+}
+
 int s1_wire_obstacle(unsigned char out[6], unsigned nearest_mm, unsigned width_mm,
                      unsigned left_mm, unsigned right_mm)
 {
     unsigned i;
-    if (out == 0 || nearest_mm > 4000u || width_mm > 2000u ||
-        left_mm > 4000u || right_mm > 4000u) { return 0; }
+    if (out == 0 || nearest_mm > 4000u ||
+        (width_mm > 2000u && width_mm != S1_WIDTH_UNAVAILABLE) ||
+        !valid_clearance(left_mm) || !valid_clearance(right_mm)) { return 0; }
     for (i = 0; i < 6u; ++i) { out[i] = 0; }
     s1_wire_put(out, 0u, 12u, nearest_mm);
     s1_wire_put(out, 12u, 11u, width_mm);

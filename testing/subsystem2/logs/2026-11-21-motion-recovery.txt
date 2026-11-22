@@ -1,0 +1,38 @@
+microT-Kernel Version 3.00
+
+[PASS] Q1 commands rejected before ready
+[PASS] Q2 FIFO command order 1,2,3 preserved
+[PASS] Q3 queue capacity accepts exactly configured slots
+[PASS] Q4 full queue rejects extra command
+[PASS] Q5 busy includes queued commands
+[PASS] Q6 pending stop blocks new movement submission
+[PASS] Q7 stop latch present, retains selected speed
+[PASS] Q8 stop purges old queued movements
+[PASS] Q9 drained transport not busy
+[PASS] Q10 speed zero uses priority stop
+[PASS] Q11 eight angles fit three-bit payload
+[PASS] Q12 invalid inputs rejected
+[PASS] Q13 fresh timestamp meets owner age predicate
+[PASS] Q14 delayed timestamp fails owner age predicate
+[PASS] Q15 status snapshot round trip
+Priority probe order=1,2; processors=2,2; expected high=1 then low=2
+[PASS] P1 same-core task priority order
+QUEUE SUMMARY PASS=16 FAIL=0
+CLOCK CHECK kernel=5010 ms hardware=5008008 us
+QUEUE: 16 checks passed. STARTING AUTOMATIC MOVEMENT.
+1: forward 200 mm at 25% target
+200 mm: rpm L=43 R=11 PWM L=0 R=0 progress L=607 R=620 faults=0
+2: left 45 degrees, then right 45 degrees
+left45: rpm L=40 R=38 PWM L=0 R=0 progress L=131 R=134 faults=0
+right45: rpm L=34 R=37 PWM L=0 R=0 progress L=135 R=129 faults=0
+3: forward at 25% target for 2 seconds
+25% target: rpm L=50 R=51 PWM L=26 R=26 progress L=0 R=0 faults=0
+25% target: rpm L=53 R=52 PWM L=26 R=26 progress L=0 R=0 faults=0
+25% target: rpm L=53 R=56 PWM L=26 R=26 progress L=0 R=0 faults=0
+Stop observed after 20 ms (kernel time resolution 10 ms)
+4: forward at 50% target for 2 seconds
+50% target: rpm L=111 R=103 PWM L=52 R=53 progress L=0 R=0 faults=0
+50% target: rpm L=109 R=109 PWM L=53 R=53 progress L=0 R=0 faults=0
+50% target: rpm L=95 R=98 PWM L=55 R=54 progress L=0 R=0 faults=0
+Stop observed after 20 ms (kernel time resolution 10 ms)
+MOTION AUTOTEST COMPLETE. Verify physical distance/angles yourself. Reset repeats.

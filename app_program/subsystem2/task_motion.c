@@ -3,6 +3,9 @@
 #include "motion_core.h"
 #include "motion_transport.h"
 #include "motion_hw.h"
+#if !APP_BUDDY1_DEMO
+#include "../vehicle_controller/vehicle_controller.h"
+#endif
 
 /* A relative tk_dly_tsk(10) in this port adds a 10ms guard tick and
  * can sleep 20ms. Use the kernel's phase-preserving 10ms cyclic releases.
@@ -29,6 +32,8 @@ static bool execute(uint16_t word)
     case S2_LEFT:return s2_core_turn_left(arg+1);
     case S2_RIGHT:return s2_core_turn_right(arg+1);
     case S2_CLEAR:return s2_core_clear_faults();
+    case S2_MANEUVER:return s2_core_maneuver(arg);
+    case S2_ARC:return arg<=1 && s2_core_arc(arg!=0);
     default:return false;
     }
 }
@@ -55,6 +60,10 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
     uint32_t stopped_at_ms=boot;
     bool settling_active=false;
     bool was_busy=false;
+#if !APP_BUDDY1_DEMO
+    bool was_ready=false, was_still=false;
+    unsigned previous_faults=0;
+#endif
     while(1){
         ER wake=tk_slp_tsk(TMO_FEVR);
         if(wake<E_OK)continue;
@@ -83,7 +92,8 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
                can be older than a command enqueued while the owner was blocked. */
             uint32_t received=s2_now_ms();age=(uint32_t)(received-issued);
             bool fresh=age<=S2_COMMAND_TTL_MS;
-            bool starts=(op==S2_FORWARD||op==S2_BACKWARD||op==S2_WHEELS||op==S2_WHEEL_RPM||op==S2_MOVE_F||op==S2_MOVE_B||op==S2_LEFT||op==S2_RIGHT);
+            bool starts=op==S2_FORWARD||op==S2_BACKWARD||op==S2_WHEELS||op==S2_WHEEL_RPM||
+                        op==S2_MOVE_F||op==S2_MOVE_B||op==S2_LEFT||op==S2_RIGHT||op==S2_MANEUVER||op==S2_ARC;
             bool settled=!starts || s2_core_busy() || !settling_active;
             /* Requests during settling are rejected, never silently replayed later. */
             if(!fresh)reason=S2_REPLY_STALE;
@@ -116,5 +126,14 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
         if(s2_core_faults())s2_discard_queue();
         s2_publish(&snapshot,ready);
         if(have)s2_record_owner_result(word,age,reason,accepted);
+#if !APP_BUDDY1_DEMO
+        bool still=!busy && s2_get_bits(&snapshot,9,9)<=2 && s2_get_bits(&snapshot,18,9)<=2;
+        unsigned faults=s2_core_faults();
+        if(have || stopped || ready!=was_ready || still!=was_still || faults!=previous_faults)
+            vehicle_notify_feedback();
+        was_ready=ready;
+        was_still=still;
+        previous_faults=faults;
+#endif
     }
 }
