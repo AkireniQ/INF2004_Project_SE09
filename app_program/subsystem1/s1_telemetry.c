@@ -72,7 +72,7 @@ void s1_publish_telemetry(void)
         account(s1_publish_line(ir,s.barcode));
     }
     if(s.terrain_valid && (uint32_t)(s.timestamp_ms-s.terrain_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS)
-        account(s1_publish_terrain(s.height_mm,s.terrain_phase));
+        account(s1_publish_terrain(s.height_mm, s.max_height_mm, s.terrain_phase));
     if(s.obstacle_profile ||
        (s.obstacle_valid && (uint32_t)(s.timestamp_ms-s.obstacle_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS))
         account(s1_publish_obstacle(s.near_mm,s.width_mm,s.clear_left_mm,s.clear_right_mm));

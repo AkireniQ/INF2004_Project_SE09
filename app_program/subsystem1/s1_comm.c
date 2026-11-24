@@ -28,10 +28,10 @@ ER s1_publish_line(unsigned ir_bits, unsigned barcode)
     return publish(MQTT_ROUTE_LINE, data, sizeof(data));
 }
 
-ER s1_publish_terrain(unsigned height_mm, unsigned phase)
+ER s1_publish_terrain(unsigned height_mm, unsigned max_height_mm, unsigned phase)
 {
-    unsigned char data[2];
-    if (!s1_wire_terrain(data, height_mm, phase)) { return E_PAR; }
+    unsigned char data[3];
+    if (!s1_wire_terrain(data, height_mm, max_height_mm, phase)) { return E_PAR; }
     return publish(MQTT_ROUTE_TERRAIN, data, sizeof(data));
 }
 

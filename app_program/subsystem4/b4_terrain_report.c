@@ -12,8 +12,11 @@ void b4_terrain_report_observe(B4_TERRAIN_REPORT *r,
         r->phase = out->hump_state == B4_HUMP_RIGHT_RISE
             ? B4_TERRAIN_ASCENDING : out->terrain_state;
     }
-    if (!out->hump_detected || !out->height_valid ||
-        out->peak_height_mm < 0 || out->peak_height_mm > 2000) return;
+    if (!out->hump_detected || !out->height_valid || out->peak_height_mm < 0 ||
+        (uint32_t)out->peak_height_mm > B4_TERRAIN_HEIGHT_MAX_MM) return;
+    r->max_height_mm = out->max_height_valid && out->max_height_mm >= out->peak_height_mm &&
+                       (uint32_t)out->max_height_mm <= B4_TERRAIN_HEIGHT_MAX_MM
+                       ? (uint16_t)out->max_height_mm : B4_TERRAIN_HEIGHT_UNAVAILABLE;
     if (r->count == B4_TERRAIN_QUEUE_SIZE) {
         if (r->dropped < UINT32_MAX) ++r->dropped;
         return;
@@ -24,10 +27,10 @@ void b4_terrain_report_observe(B4_TERRAIN_REPORT *r,
 }
 
 uint8_t b4_terrain_report_next(B4_TERRAIN_REPORT *r, uint32_t now,
-                               uint8_t connected, uint16_t *height, uint8_t *phase)
+                               uint8_t connected, uint16_t *height,
+                               uint16_t *max_height, uint8_t *phase)
 {
-    if (!r || !height || !phase || !connected || !r->sample_valid ||
-        (uint32_t)(now - r->sample_at) > B4_TERRAIN_SAMPLE_MAX_AGE_MS) {
+    if (!r || !height || !max_height || !phase || !connected) {
         if (r && !connected) r->holding = 0U;
         return 0U;
     }
@@ -38,7 +41,11 @@ uint8_t b4_terrain_report_next(B4_TERRAIN_REPORT *r, uint32_t now,
     } else if (r->have_height) {
         *height = r->displayed_height;
     } else return 0U;
-    *phase = r->phase;
+    /* Completed heights remain valid even if the IMU currently cannot
+       determine the terrain phase, such as after the car is picked up. */
+    *max_height = r->max_height_mm;
+    *phase = r->sample_valid && (uint32_t)(now - r->sample_at) <= B4_TERRAIN_SAMPLE_MAX_AGE_MS
+             ? r->phase : B4_TERRAIN_PHASE_UNAVAILABLE;
     return 1U;
 }
 

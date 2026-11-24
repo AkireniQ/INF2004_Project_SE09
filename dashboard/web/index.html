@@ -75,10 +75,9 @@
         <p class="metric-note">If this card is stale, check IR age in the Vehicle controller card for the Pico’s latest local readings.</p>
       </section>
       <section class="card telemetry-card" id="terrain-card">
-        <div class="section-top"><h2>Terrain &amp; hump</h2><span class="sample-status" id="terrain-freshness">No data</span></div>
-        <span class="field-label">REPORTED HEIGHT</span><div class="metric"><span id="terrain-height">—</span><small>mm</small></div>
-        <div class="mode-row"><span>Terrain phase <strong id="terrain-phase">—</strong></span></div>
-        <p class="metric-note">Appears when Buddy 4 submits a valid height measurement. Missing telemetry is not a measured height of zero.</p>
+        <div class="section-top"><h2>Hump height</h2><span class="sample-status" id="terrain-freshness">No data</span></div>
+        <span class="field-label">LAST COMPLETED HUMP</span><div class="metric"><span id="terrain-height">—</span><small>mm</small></div>
+        <div class="mode-row"><span>Highest since power-up <strong id="terrain-max-height">—</strong></span><span>Terrain <strong id="terrain-phase">—</strong></span></div>
       </section>
       <section class="card telemetry-card" id="obstacle-card">
         <div class="section-top"><h2>Obstacle scan</h2><span class="sample-status" id="obstacle-freshness">No data</span></div>

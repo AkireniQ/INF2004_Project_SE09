@@ -30,7 +30,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(self.d.snapshot()['telemetry']['vehicle']['data']['state'],'FAULT')
     def test_all_wire_payloads(self):
         self.assertEqual(decode_telemetry('line',bytes([5|(2<<3)]))['barcode'],'B')
-        self.assertEqual(decode_telemetry('terrain',(125|(2<<11)).to_bytes(2,'little')),dict(height_mm=125,phase=2))
+        self.assertEqual(decode_telemetry('terrain', (125 | (2 << 11)).to_bytes(2, 'little')),
+                         dict(height_mm=125, max_height_mm=None, phase=2, phase_label='Descending'))
         obstacle=(500|(80<<12)|(200<<23)|(300<<35)).to_bytes(6,'little')
         self.assertEqual(decode_telemetry('obstacle',obstacle),dict(nearest_mm=500,width_mm=80,left_mm=200,right_mm=300))
         uncertain=(140|(2047<<12)|(4094<<23)|(4095<<35)).to_bytes(6,'little')
@@ -46,6 +47,15 @@ class TelemetryTests(unittest.TestCase):
         self.assertFalse(state['telemetry']['motion']['fresh'])
         self.assertTrue(state['telemetry']['vehicle']['fresh'])
         self.assertIsNone(state['telemetry']['terrain']['data'])
+    def test_completed_hump_and_maximum_survive_unavailable_phase(self):
+        self.send('terrain', bytes.fromhex('16 b8 04'))  # Same frame as the firmware test.
+        report = self.d.snapshot()['telemetry']['terrain']
+        self.assertTrue(report['fresh'])
+        self.assertEqual(report['data'],
+                         dict(height_mm=22, max_height_mm=37, phase=3, phase_label='Unavailable'))
+        no_maximum = ((2047 << 13) | 22).to_bytes(3, 'little')
+        self.assertIsNone(decode_telemetry('terrain', no_maximum)['max_height_mm'])
+        self.assertEqual(decode_telemetry('terrain', bytes(3))['height_mm'], 0)
     def test_retained_and_bad_payloads_do_not_refresh(self):
         self.send('motion',motion_packet(),True)
         self.assertIsNone(self.d.snapshot()['telemetry']['motion']['data'])
@@ -63,6 +73,8 @@ class TelemetryTests(unittest.TestCase):
     def test_padding_and_range_rejection(self):
         packets=[('vehicle',b'\x07'),('line',b'\xc0'),('line',b'\x28'),
                  ('terrain',(2001).to_bytes(2,'little')),('terrain',b'\x00\xc0'),
+                 ('terrain',(22 | (21 << 13)).to_bytes(3,'little')),
+                 ('terrain',(2001 << 13).to_bytes(3,'little')),
                  ('obstacle',(4001).to_bytes(6,'little')),('obstacle',(1<<47).to_bytes(6,'little')),
                  ('motion',(1<<67).to_bytes(9,'little')),('motion',(101<<27).to_bytes(9,'little'))]
         for kind,payload in packets:

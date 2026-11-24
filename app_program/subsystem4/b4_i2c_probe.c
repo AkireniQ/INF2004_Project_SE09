@@ -795,19 +795,19 @@ static void b4_terrain_report_task(INT stacd, void *exinf)
     (void)stacd; (void)exinf;
     for (;;) {
         SYSTIM now;
-        uint16_t height = 0U;
+        uint16_t height = 0U, max_height = 0U;
         uint8_t phase = 0U, submit = 0U;
         uint32_t dropped = 0U;
         uint8_t connected = (s1_connection_status() & 3U) == 3U;
         tk_get_tim(&now);
         if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) >= E_OK) {
             submit = b4_terrain_report_next(&b4_terrain_report, now.lo,
-                                              connected, &height, &phase);
+                                              connected, &height, &max_height, &phase);
             dropped = b4_terrain_report.dropped;
             (void)tk_unl_mtx(b4_snapshot_mtx);
         }
         if (submit) {
-            if (vehicle_submit_terrain(height, phase)) {
+            if (vehicle_submit_terrain(height, max_height, phase)) {
                 if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) >= E_OK) {
                     b4_terrain_report_commit(&b4_terrain_report, now.lo);
                     (void)tk_unl_mtx(b4_snapshot_mtx);
