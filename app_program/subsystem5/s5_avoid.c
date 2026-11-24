@@ -390,11 +390,6 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
         /* The scan task keeps ranging at 90 degrees while stopped. A new
            sweep can begin once a current forward range justifies it. */
         if (!in->stopped) return wait;
-        if (in->retry_scan) {
-            clear_path_failure(state);
-            state->scan_retried = true;
-            return go(state, S5_PROFILE_PATH, in->now);
-        }
         if (!range_fresh || !at_or_after(in->range_at, state->phase_at)) {
             state->range_seen = false;
             return wait;
@@ -403,6 +398,11 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
             if (!confirmed_forward(state, in)) return wait;
             clear_path_failure(state);
             return go(state, S5_COMPLETE, in->now);
+        }
+        if (in->retry_scan) {
+            clear_path_failure(state);
+            state->scan_retried = true;
+            return go(state, S5_PROFILE_PATH, in->now);
         }
         state->range_seen = false;
         /* Allow one automatic retry if the forward echo returns or the
@@ -455,6 +455,8 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
             return go(state, S5_TURN_OUT, in->now);
         }
         S5_FAILURE reason = plan.failure;
+        if (reason == S5_FAIL_TARGET && !range_fresh)
+            return wait_for_path(state, S5_FAIL_ECHO, in);
         if (!state->scan_retried && (reason == S5_FAIL_TARGET || reason == S5_FAIL_ECHO)) {
             state->scan_retried = true;
             go(state, S5_PROFILE_PATH, in->now);

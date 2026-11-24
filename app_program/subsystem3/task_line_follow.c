@@ -104,15 +104,21 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
             continue;
         }
         (void)tk_can_wup(task);
-        (void)tk_get_otm(&time);
         INT left, center, right;
         __atomic_store_n(&sampler_stage, S3_READ_ADC, __ATOMIC_RELAXED);
-        if (line_sense(&left, &center, &right) < E_OK) {
+        ER sample = line_sense(&left, &center, &right);
+        if (sample == E_IO) {
+            /* Retry the whole sample once so both tracking readings are fresh.
+               The controller still times out the previous sample independently. */
+            sample = line_sense(&left, &center, &right);
+        }
+        if (sample < E_OK) {
             vehicle_invalidate_line();
             steering = (LF_STATE){0};
             barcode_reset();
             continue;
         }
+        (void)tk_get_otm(&time);
 
         __atomic_store_n(&sampler_stage, S3_UPDATE_STEERING, __ATOMIC_RELAXED);
         BOOL following = vehicle_is_following();

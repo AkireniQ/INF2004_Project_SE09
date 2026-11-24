@@ -24,6 +24,15 @@ cc -std=c11 -Wall -Wextra -Werror testing/integration/test_motion_crawl.c \
 /tmp/test_motion_crawl
 ```
 
+The device-manager lock regression runs two host threads through the production SMP lock implementation with simulated kernel event flags.
+
+```sh
+cc -std=gnu11 -Wall -Wextra -Werror -pthread -include stddef.h \
+  -DPROHIBIT_DEF_SIZE_T -D_PICO_RP2040_ -DCNF_SMP=1 -isystem include -isystem config \
+  testing/integration/test_fastmlock.c lib/libtk/fastmlock.c -o /tmp/test_fastmlock
+/tmp/test_fastmlock
+```
+
 Tests that two or more subsystems work together. There is one test (or more) for every interface listed in TEAM.md section 5. Both owners agree on the test and sign off the result.
 
 See `testing/README.md` for how to run tests and record results.
