@@ -53,7 +53,8 @@ static S5_PROFILE obstacle(bool left)
 {
     return (S5_PROFILE){.nearest_mm = S5_SCAN_STOP_MM, .front_mm = S5_SCAN_STOP_MM, .width_mm = 90,
                         .left_mm = S5_UNKNOWN_RANGE, .right_mm = S5_UNKNOWN_RANGE,
-                        .left_path_mm = left ? 850 : 600, .right_path_mm = left ? 600 : 850,
+                        .left_path_mm = left ? 850 : 600,
+                        .right_path_mm = left ? S5_MANEUVER_STOP_MM : 850,
                         .left_edge_mm = -50, .right_edge_mm = 40,
                         .left_edge_valid = true, .right_edge_valid = true};
 }
@@ -326,7 +327,7 @@ static void test_unsafe_profile_and_scan_timeout(void)
     assert(out.maneuver.action == S5_WAIT && lost_target.avoidance.phase == S5_WAIT_PATH &&
            lost_target.avoidance.failure == S5_FAIL_ECHO);
 
-    step(&model, &in, &out, 14000);
+    step(&model, &in, &out, 15000);
     assert(out.maneuver.action == S5_WAIT && model.avoidance.phase == S5_WAIT_PATH &&
            model.avoidance.failure == S5_FAIL_SCAN_TIMEOUT && model.state == VC_AVOIDING);
     in.avoidance.range_valid = false;
@@ -438,12 +439,12 @@ static void test_width_and_side_clearance(void)
     S5_BYPASS plan = s5_plan_bypass(&scan);
     assert(plan.side == S5_LEFT);
     assert(plan.offset_mm == 188);
-    scan.left_path_mm = scan.right_path_mm;
+    scan.left_path_mm = scan.right_path_mm = S5_OPEN_RANGE;
     scan.left_edge_mm = -100;
     scan.right_edge_mm = 70;
     assert(s5_plan_bypass(&scan).side == S5_RIGHT); /* Shorter shift leaves more space. */
     scan.left_edge_mm = -scan.right_edge_mm;
-    assert(s5_plan_bypass(&scan).side == S5_LEFT);
+    assert(s5_plan_bypass(&scan).side == S5_RIGHT); /* Comparable open routes prefer right. */
     scan.front_mm = 114;
     plan = s5_plan_bypass(&scan);
     assert(plan.side == S5_NO_SIDE && plan.failure == S5_FAIL_ROOM);
@@ -452,7 +453,7 @@ static void test_width_and_side_clearance(void)
     scan.width_mm = S5_UNKNOWN_WIDTH;
     plan = s5_plan_bypass(&scan);
     assert(plan.side == S5_LEFT && plan.offset_mm == 188);
-    scan = obstacle(true);
+    scan = obstacle(false);
     scan.left_path_mm = S5_UNKNOWN_RANGE;
     assert(s5_plan_bypass(&scan).side == S5_RIGHT);
 
@@ -471,7 +472,7 @@ static void test_centered_and_offset_boxes(void)
     scan.left_edge_mm = -100;
     scan.right_edge_mm = 100;
     S5_BYPASS plan = s5_plan_bypass(&scan);
-    assert(plan.side == S5_LEFT && plan.offset_mm == 235);
+    assert(plan.side == S5_RIGHT && plan.offset_mm == 235);
 
     scan.left_path_mm = scan.right_path_mm = 399;
     plan = s5_plan_bypass(&scan);

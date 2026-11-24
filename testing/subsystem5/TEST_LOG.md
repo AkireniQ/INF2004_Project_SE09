@@ -67,6 +67,8 @@ Flash `mtk3pico_smp1_usb_cdc_s5bench.uf2` and open the USB serial console. The b
 
 Place a flat box about 200 mm ahead. Confirm the forward echo, five coarse bearings, fine edge samples, nearest distance, width estimate and chosen side. Repeat with the left and the right side obstructed in turn. Check that an empty forward sector reports open or returns a measured background beyond the clearance threshold. No rising edge, a stuck echo pin, and malformed pulses remain unavailable.
 
+Repeat with empty sides and with stationary objects beside the box. At an unresolved side bearing, the final two pings wait 200 ms between attempts and allow up to 100 ms to capture a complete echo. A complete long pulse can confirm open range on repeated pings, and a shorter measured distance constrains the route. Verify a right turn when both routes are comparable and a left turn when only the left side fits.
+
 ### Track acceptance
 
 Repeat a run on clear tape with no sonar target. An unavailable echo should leave line following active and the servo at 90°. Present a box within 230 mm and verify that the wheels stop and the servo sweeps only if the centered check confirms a close target. If a confirmed close target's echo drops out, the car should hold at rest while checking forward. After a successful detour, line following should resume when the IR sensors confirm the tape, including when forward echoes are unavailable.

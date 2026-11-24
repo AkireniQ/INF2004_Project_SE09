@@ -10,7 +10,7 @@ enum { S5_CAPTURE_IDLE, S5_CAPTURE_RISE, S5_CAPTURE_FALL, S5_CAPTURE_DONE,
 typedef struct {
     uint32_t triggered_at, rose_at;
     unsigned state : 3;
-    unsigned pulse_us : 16;
+    unsigned pulse_us : 17;
 } S5_ECHO_CAPTURE;
 
 /* The task arms and drains this state with the local interrupt masked. */

@@ -10,6 +10,7 @@
 #define SERVO_HOME_SETTLE_MS 350
 #define PING_INTERVAL_MS 60
 #define FINE_ATTEMPTS 5u
+#define CLEARANCE_RETRY_PAUSE_MS 200
 #define RANGE_LOG_INTERVAL_MS 2000u
 #define SCAN_WAKE 1u
 #define BYPASS_SCAN_STEPS (S5_CLEARANCE_BEARING_DEG / S5_FINE_STEP)
@@ -65,8 +66,11 @@ static unsigned read_at(unsigned index, BOOL verbose, SCAN_READING reading, unsi
     unsigned ranges[FINE_ATTEMPTS];
     S5_PING clearance_pings[FINE_ATTEMPTS];
     for (unsigned attempt = 0; attempt < attempts; ++attempt) {
-        if (attempt) tk_dly_tsk(PING_INTERVAL_MS);
-        S5_PING ping = s5_hw_ping();
+        /* Apply the longer cadence and capture window only to the final
+           two pings at an unresolved side bearing while stopped. */
+        bool extended = reading == SCAN_CLEARANCE && attempt >= FINE_ATTEMPTS - 2u;
+        if (attempt) tk_dly_tsk(extended ? CLEARANCE_RETRY_PAUSE_MS : PING_INTERVAL_MS);
+        S5_PING ping = extended ? s5_hw_ping_extended() : s5_hw_ping();
         if (verbose) log_ping("[S5 BENCH]", attempt ? "recheck" : "scan", servo_angle, ping);
         if (reading == SCAN_COARSE && s5_range_measured(ping.range_mm)) return ping.range_mm;
         if (reading == SCAN_CLEARANCE) clearance_pings[attempt] = ping;
@@ -322,8 +326,9 @@ static unsigned bench_wait_for_echo(BOOL want_target)
 
         unsigned range = ping.range_mm;
         bool measured = s5_range_measured(range);
-        bool timed_out = ping.state == S5_ECHO_QUIET || ping.state == S5_ECHO_FALL_TIMEOUT ||
-                         ping.state == S5_ECHO_LATE;
+        bool timed_out = !s5_range_available(range) &&
+                         (ping.state == S5_ECHO_QUIET || ping.state == S5_ECHO_FALL_TIMEOUT ||
+                          ping.state == S5_ECHO_LATE);
         if (!timed_out) timeouts = 0;
         else if (timeouts < BENCH_TIMEOUT_CONFIRMATIONS) ++timeouts;
 
