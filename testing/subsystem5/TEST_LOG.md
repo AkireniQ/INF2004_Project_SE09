@@ -41,13 +41,21 @@ cc -std=c11 -Wall -Wextra -Werror testing/subsystem5/test_avoidance.c \
 cc -std=gnu11 -Wall -Wextra -Werror -DPROHIBIT_DEF_SIZE_T -D_PICO_RP2040_ \
   -DCNF_SMP=1 -DTM_MQTT=1 -isystem include -isystem config \
   testing/subsystem5/test_controller_events.c app_program/subsystem5/s5_avoid.c \
-  app_program/vehicle_controller/vehicle_core.c -o /tmp/test_s5_controller
+  app_program/vehicle_controller/vehicle_core.c \
+  app_program/subsystem4/b4_{imu,event,calibration,processor,safety_dispatch,terrain_report}.c \
+  -o /tmp/test_s5_controller
 /tmp/test_s5_controller
 
 cc -std=gnu11 -Wall -Wextra -Werror testing/subsystem5/test_arc_motion.c \
   app_program/subsystem2/motion_crawl.c -o /tmp/test_s5_arc
 /tmp/test_s5_arc
 ```
+
+The controller regression also exercises the production Buddy 4 processor and
+stop dispatcher: an unsafe START is rejected, a hazard between enqueue and
+worker acceptance cancels START, another controller blocker preserves the
+latch, and an accepted explicit restart allows a second hazard to stop again.
+The RTOS and motor owner are simulated; this is not physical stop validation.
 
 ### Stationary sonar bench
 
@@ -73,6 +81,4 @@ The log should show two 60° rolling turns on departure and another two on retur
 
 After both crossings, the car keeps rolling straight to the encoder position for the final arc. If the search reaches its cap first, the car completes the remaining distance in a separate bounded move. The USB log shows both crossing distances and the target used for the final arc. The alignment calculation assumes an 18 mm stripe. After the final arc, verify that the car straddles the tape with both outer sensors over white. The first new forward sonar reading is used before line-follow motion starts again. Verify that STOP and the pickup stop can interrupt the preset route.
 
-After a confirmed two-sensor crossing and the final arc, put one outer sensor on a tape edge and confirm the handoff still succeeds. The normal line follower uses that edge to correct the position as it moves.
-
-The controller uses IR freshness during line following, tape search and confirmation, and a reverse along the tape. A delayed IR update during an encoder-only arc or straight pass does not interrupt that move. If IR is unavailable when the car reaches tape search or confirmation, the controller waits at rest for up to one second. Loss of IR during a moving tape search still stops the car.
+After a confirmed two-sensor crossing and the final arc, put one outer sensor on a tape edge and confirm the handoff still succeeds. The normal line follower uses that edge to correct the position as it m

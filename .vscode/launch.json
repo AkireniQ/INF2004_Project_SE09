@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "lldb",
+      "request": "launch",
+      "args": [],
+      "cwd": "/Users/aloisklosterhuber/Desktop/INF2004-main/INF2004_Project_SE09/app_program/subsystem4",
+      "program": "/Users/aloisklosterhuber/Desktop/INF2004-main/INF2004_Project_SE09/app_program/subsystem4/build/Debug/outDebug"
+    }
+  ]
+}

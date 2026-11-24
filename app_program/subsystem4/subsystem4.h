@@ -35,4 +35,8 @@ IMPORT void	monitor_alarm_handler(void *exinf);
  * Returns a copy; valid once the Buddy 4 IMU processor has produced output. */
 IMPORT uint8_t b4_get_snapshot(B4_PROCESSOR_OUTPUT *out);
 
+/* Task-context restart interlock. Only the controller accepting explicit START
+ * may request rearming; ordinary readiness checks never clear the stop latch. */
+IMPORT uint8_t b4_safety_restart(uint8_t rearm);
+
 #endif /* SUBSYSTEM4_H */
