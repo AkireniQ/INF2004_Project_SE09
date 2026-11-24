@@ -177,8 +177,6 @@ function drawTelemetry(data) {
   let sonarActivity = "Latest forward sonar: " + forward;
   if (scanning) sonarActivity = "Sonar scan in progress";
   else if (bypassing) sonarActivity = "Bypass in progress · " + sonar.phase;
-  else if (sonar?.phase === "complete" && sonar.forward_mm == null && vehicle?.state === "FOLLOW_LINE")
-    sonarActivity = "Tape reacquired. Waiting for forward sonar.";
   el("sonar-detail").hidden = sonar === null;
   text("sonar-detail", sonar ? sonarActivity + detour : null);
   faultList("motor-faults", motion?.fault_labels ?? [], Boolean(motion));

@@ -22,53 +22,26 @@
 
 #if USE_MULTI_LOCK
 /* ------------------------------------------------------------------------ */
-/*
- *	void INC( INT *val )		increment 
- *	void DEC( INT *val )		decrement 
- *	BOOL BTS( UINT *val, INT no )	bit test and set 
- *	void BR( UINT *val, INT no )	bit reset 
- *
- *	The above must be operated exclusively.
- */
-
-Inline void INC( INT *val )
+/* Protect the lock bits and waiter count together. A local interrupt mask
+ * alone allows both cores to race and lose the wakeup for a blocked caller. */
+Inline void mlock_state_enter( FastMLock *lock, UINT *imask )
 {
-	UINT	imask;
-
-	DI(imask);
-	(*val)++;
-	EI(imask);
+#if TK_SUPPORT_SMP
+	(void)ISpinLock(&lock->state_lock, imask);
+#else
+	(void)lock;
+	DI(*imask);
+#endif
 }
 
-Inline void DEC( INT *val )
+Inline void mlock_state_leave( FastMLock *lock, UINT imask )
 {
-	UINT	imask;
-
-	DI(imask);
-	(*val)--;
+#if TK_SUPPORT_SMP
+	(void)ISpinUnlock(&lock->state_lock, imask);
+#else
+	(void)lock;
 	EI(imask);
-}
-
-Inline BOOL BTS( UINT *val, INT no )
-{
-	UINT	imask;
-	UINT	b;
-	UINT	bm = (UINT)(1 << no);
-
-	DI(imask);
-	b = *val & bm;
-	*val |= bm;
-	EI(imask);
-	return (BOOL)b;
-}
-
-Inline void BR( UINT *val, INT no )
-{
-	UINT	imask;
-
-	DI(imask);
-	*val &= ~(UINT)(1 << no);
-	EI(imask);
+#endif
 }
 
 
@@ -78,23 +51,22 @@ Inline void BR( UINT *val, INT no )
  */
 EXPORT ER MLockTmo( FastMLock *lock, INT no, TMO tmo )
 {
-	UINT	ptn = (UINT)(1 << no);
-	UINT	flg;
-	ER	ercd;
+	UINT	ptn = (UINT)1u << no;
+	UINT	flg, imask;
+	ER	ercd = E_OK;
 
-	INC(&lock->wai);
-	for ( ;; ) {
-		if ( !BTS(&lock->flg, no) ) {
-			ercd = E_OK;
-			break;
-		}
-
+	mlock_state_enter(lock, &imask);
+	++lock->wai;
+	while ( (lock->flg & ptn) != 0 ) {
+		/* The event flag remembers a release before tk_wai_flg starts. */
+		mlock_state_leave(lock, imask);
 		ercd = tk_wai_flg(lock->id, ptn, TWF_ORW|TWF_BITCLR, &flg, tmo);
-		if ( ercd < E_OK ) {
-			break;
-		}
+		mlock_state_enter(lock, &imask);
+		if ( ercd < E_OK ) break;
 	}
-	DEC(&lock->wai);
+	if ( ercd >= E_OK ) lock->flg |= ptn;
+	--lock->wai;
+	mlock_state_leave(lock, imask);
 
 	return ercd;
 }
@@ -114,13 +86,15 @@ EXPORT ER MLock( FastMLock *lock, INT no )
  */
 EXPORT ER MUnlock( FastMLock *lock, INT no )
 {
-	UINT	ptn = (UINT)(1 << no);
-	ER	ercd;
+	UINT	ptn = (UINT)1u << no;
+	UINT	imask;
+	BOOL	wake;
 
-	BR(&lock->flg, no);
-	ercd = ( lock->wai == 0 )? E_OK: tk_set_flg(lock->id, ptn);
-
-	return ercd;
+	mlock_state_enter(lock, &imask);
+	lock->flg &= ~ptn;
+	wake = lock->wai != 0;
+	mlock_state_leave(lock, imask);
+	return wake ? tk_set_flg(lock->id, ptn) : E_OK;
 }
 
 /*
@@ -131,6 +105,9 @@ EXPORT ER CreateMLock( FastMLock *lock, CONST UB *name )
 	T_CFLG	cflg;
 	ER	ercd;
 
+#if TK_SUPPORT_SMP
+	(void)InitSpinLock(&lock->state_lock);
+#endif
 	cflg.flgatr  = TA_TPRI | TA_WMUL;
 	cflg.iflgptn = 0;
 	SetOBJNAME(cflg.exinf, "MLOC");

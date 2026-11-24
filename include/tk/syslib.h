@@ -23,6 +23,9 @@
 #define __TK_SYSLIB_H__
 
 #include "typedef.h"
+#if TK_SUPPORT_SMP
+#include "smp.h"
+#endif
 
 
 /* ------------------------------------------------------------------------ */
@@ -106,6 +109,9 @@ typedef struct {
 	INT		wai;
 	ID		id;
 	CONST UB	*name;
+#if TK_SUPPORT_SMP
+	T_SPLOCK	state_lock;
+#endif
 } FastMLock;
 
 IMPORT ER CreateMLock( FastMLock *lock, CONST UB *name );

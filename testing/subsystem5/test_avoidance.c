@@ -97,6 +97,7 @@ static void reach_inward_turn(VC_MODEL *model, VC_INPUT *in, VC_OUTPUT *out, boo
     }
     profile(model, in, out, scan);
     assert(model->avoidance.side == (left ? S5_LEFT : S5_RIGHT));
+    in->obstacle_blocked = false; /* Dispatcher clears the old heading's obstacle latch. */
     in->avoidance.range_valid = false;
     in->avoidance.range_mm = S5_UNKNOWN_RANGE;
 
@@ -183,7 +184,7 @@ static void test_rejoin(bool left, bool open_side)
     step(&model, &in, &out, 20);
     assert(model.state == VC_FOLLOW_LINE && model.avoidance.phase == S5_COMPLETE);
     step(&model, &in, &out, 20);
-    assert(out.stop && model.avoidance.phase == S5_COMPLETE);
+    assert(!out.stop && out.left_rpm == 30 && out.right_rpm == 30);
     in.avoidance.range_valid = true;
     in.avoidance.range_mm = 1000;
     in.obstacle_blocked = false;
@@ -829,7 +830,9 @@ static void test_rounded_bypass(bool left)
     assert(model.state == VC_RECOVER_LINE && model.avoidance.line_samples == 1);
     in.avoidance.line_at = in.avoidance.now + 20;
     step(&model, &in, &out, 20);
-    assert(model.state == VC_FOLLOW_LINE && model.await_forward_range);
+    assert(model.state == VC_FOLLOW_LINE && model.avoidance.phase == S5_COMPLETE);
+    step(&model, &in, &out, 20);
+    assert(!out.stop);
 }
 
 static void test_blank_floor_after_alignment_stops(void)

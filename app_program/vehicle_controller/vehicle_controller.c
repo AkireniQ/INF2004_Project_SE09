@@ -335,11 +335,12 @@ BOOL vehicle_get_snapshot(VEHICLE_SNAPSHOT *out)
     S5_PHASE phase = model.avoidance.phase;
     bool executing = s5_avoid_executing(phase);
     out->obstacle_blocked = !executing && obstacle_blocked();
-    /* Forward samples naturally age out during the initial sweep. */
+    /* Report an echo fault when it affects avoidance. Otherwise the sonar
+       topic reports an unavailable range independently of the fault flags. */
     bool scanning = phase == S5_PROFILE_PATH && !pending.profile_valid;
     bool echo_fault = phase == S5_FAILED && model.avoidance.failure == S5_FAIL_ECHO;
-    out->obstacle_no_echo = pending.obstacle_monitor &&
-                            (echo_fault || (!executing && !scanning && !range_valid(out->timestamp_ms)));
+    out->obstacle_no_echo = echo_fault ||
+                            (out->obstacle_blocked && !scanning && !range_valid(out->timestamp_ms));
     out->avoidance_phase = model.avoidance.phase;
     out->avoidance_side = model.avoidance.side;
     out->avoidance_failure = model.avoidance.failure;
@@ -436,7 +437,7 @@ static const char *const avoidance_phase_name[] = {
     [S5_FIND_LINE] = "searching for the line",
     [S5_CENTER_LINE] = "positioning for the final arc",
     [S5_ALIGN_LINE] = "realigning with the line",
-    [S5_COMPLETE] = "line reacquired, resuming line following",
+    [S5_COMPLETE] = "avoidance complete, resuming line following",
     [S5_FAILED] = "detour stopped",
     [S5_CHECK_LINE] = "confirming the line",
     [S5_BACK_UP] = "reversing for another scan",
@@ -542,7 +543,8 @@ static TMO vehicle_service_once(void)
         tape_search_peak = (__typeof__(tape_search_peak)){0};
     bool executing = s5_avoid_executing(phase);
     if (executing && !was_executing) {
-        /* The next forward range must be from the new heading after rejoining. */
+        /* The obstacle behind the new heading must not block line following
+           when forward ranging resumes after the bypass. */
         obstacle_range = (S5_RANGE_GATE){.range_mm = S5_UNKNOWN_RANGE, .blocked = true};
         pending.follow_blocked = pending.echo_grace_used = false;
     }
