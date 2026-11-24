@@ -62,6 +62,7 @@ bool s5_same_obstacle(unsigned range, unsigned reference);
 bool s5_background_beyond(unsigned range, unsigned reference);
 /* Confirm a background bearing from the full fine-scan sample window. */
 unsigned s5_edge_background(const unsigned *ranges, unsigned count, unsigned reference);
+unsigned s5_clearance_range(const unsigned *ranges, unsigned count);
 /* Optionally reports the lateral span between the outermost target echoes. */
 S5_PROFILE s5_profile(const S5_SCAN *scan, unsigned first, unsigned last, unsigned anchor,
                       unsigned *observed_span_mm);

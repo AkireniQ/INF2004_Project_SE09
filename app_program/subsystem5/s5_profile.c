@@ -120,6 +120,26 @@ unsigned s5_edge_background(const unsigned *ranges, unsigned count, unsigned ref
     return repeated || distant_echoes >= MIN_DISTANT_ECHOES ? shortest : S5_UNKNOWN_RANGE;
 }
 
+unsigned s5_clearance_range(const unsigned *ranges, unsigned count)
+{
+    unsigned nearest = S5_UNKNOWN_RANGE;
+    unsigned measured = 0;
+    unsigned open = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned range = ranges[i];
+        if (s5_range_measured(range)) {
+            ++measured;
+            if (range < nearest) nearest = range;
+        } else if (range == S5_OPEN_RANGE) {
+            ++open;
+        }
+    }
+    /* A corridor can return echoes from different surfaces. Use the nearest
+       measured distance when two usable returns support the observation. */
+    if (measured + open < 2u) return S5_UNKNOWN_RANGE;
+    return measured ? nearest : S5_OPEN_RANGE;
+}
+
 typedef struct {
     unsigned last_hit, boundary, clearance;
 } S5_EDGE;

@@ -5,7 +5,7 @@
 #define FRONT_MARGIN_MM 15u
 #define MAX_LATERAL_OFFSET_MM 400u
 #define MOTION_SETTLE_MS 260u
-#define SCAN_TIMEOUT_MS 14000u
+#define SCAN_TIMEOUT_MS 15000u
 #define RESCAN_INTERVAL_MS 1000u
 #define RESCAN_RANGE_CHANGE_MM 30u
 #define PHASE_TIMEOUT_MS 9000u
@@ -193,12 +193,10 @@ static S5_BYPASS plan_bypass(const S5_PROFILE *profile, unsigned limit_mm)
         return plan;
     }
 
-    /* Prefer the shorter usable route when the signed edges differ enough. */
-    bool use_left = left && (!right || left_path - left_required >= right_path - right_required);
-    if (left && right && profile->left_edge_valid && profile->right_edge_valid) {
-        if (left_offset + EDGE_OFFSET_DEADBAND_MM < right_offset) use_left = true;
-        else if (right_offset + EDGE_OFFSET_DEADBAND_MM < left_offset) use_left = false;
-    }
+    /* Use right when both routes fit unless the measured left route is shorter. */
+    bool shorter_left = left && profile->left_edge_valid && profile->right_edge_valid &&
+                        left_offset + EDGE_OFFSET_DEADBAND_MM < right_offset;
+    bool use_left = !right || shorter_left;
     plan.side = use_left ? S5_LEFT : S5_RIGHT;
     plan.failure = S5_FAIL_NONE;
     plan.offset_mm = use_left ? left_offset : right_offset;

@@ -24,13 +24,16 @@
 #define S5_TIMER_IRQ 0u
 #define S5_ALARM_BIT 1u
 #define PING_DONE 1u
-#define PING_GUARD_MS 75
+#define PING_GUARD_MARGIN_MS 15
 #define RESET_POLLS 32768u
 
 static uintptr_t echo_irq_base;
 static ID ping_event;
 static bool pwm_ready;
 static volatile S5_ECHO_CAPTURE capture;
+static volatile unsigned observation_us;
+
+_Static_assert(S5_ECHO_EXTENDED_US <= (1u << 17), "Echo pulse must fit in 17 bits");
 
 static bool echo_high(void)
 {
@@ -77,9 +80,9 @@ void s5_hw_echo_irq(void)
     uint32_t now = MICROS;
     ECHO_INTR = edges;
     unsigned previous = capture.state;
-    s5_capture_edge(&capture, now, (edges & ECHO_RISE) != 0, (edges & ECHO_FALL) != 0, S5_ECHO_OBSERVE_US);
+    s5_capture_edge(&capture, now, (edges & ECHO_RISE) != 0, (edges & ECHO_FALL) != 0, observation_us);
     if (previous == S5_CAPTURE_RISE && capture.state == S5_CAPTURE_FALL) {
-        REG32(TIMER_ALARM0) = capture.triggered_at + S5_ECHO_OBSERVE_US;
+        REG32(TIMER_ALARM0) = capture.triggered_at + observation_us;
         REG32(TIMER_INTR) = S5_ALARM_BIT;
     } else if (capture.state == S5_CAPTURE_DONE || capture.state == S5_CAPTURE_LATE ||
                capture.state == S5_CAPTURE_BAD) {
@@ -209,7 +212,7 @@ void s5_hw_angle(unsigned angle)
         pwm_set_cc(S5_SERVO_PIN, s5_servo_pulse_us(angle));
 }
 
-S5_PING s5_hw_ping(void)
+static S5_PING ping(unsigned observe_us)
 {
     if (!ping_event) return s5_classify_echo(S5_ECHO_TIMING, 0);
     if (echo_high()) return s5_classify_echo(S5_ECHO_HIGH, 0);
@@ -217,6 +220,7 @@ S5_PING s5_hw_ping(void)
     (void)tk_clr_flg(ping_event, ~PING_DONE);
     UW saved;
     DI(saved);
+    observation_us = observe_us;
     capture.state = S5_CAPTURE_TRIGGER;
     gpio_set_val(TRIG_PIN, 1);
     REG32(TIMER_ALARM0) = MICROS + TRIGGER_US;
@@ -224,7 +228,8 @@ S5_PING s5_hw_ping(void)
 
     /* The kernel timeout also bounds failure of the hardware timer or IRQ. */
     UINT events;
-    ER result = tk_wai_flg(ping_event, PING_DONE, TWF_ORW | TWF_BITCLR, &events, PING_GUARD_MS);
+    TMO guard_ms = (TMO)(observe_us / 1000u) + PING_GUARD_MARGIN_MS;
+    ER result = tk_wai_flg(ping_event, PING_DONE, TWF_ORW | TWF_BITCLR, &events, guard_ms);
     DI(saved);
     gpio_set_val(TRIG_PIN, 0);
     REG32(TIMER_ARMED) = S5_ALARM_BIT;
@@ -236,5 +241,15 @@ S5_PING s5_hw_ping(void)
     capture.state = S5_CAPTURE_IDLE;
     EI(saved);
     return s5_capture_result(&sample, finished_at, result == E_OK, false);
+}
+
+S5_PING s5_hw_ping(void)
+{
+    return ping(S5_ECHO_OBSERVE_US);
+}
+
+S5_PING s5_hw_ping_extended(void)
+{
+    return ping(S5_ECHO_EXTENDED_US);
 }
 #endif
