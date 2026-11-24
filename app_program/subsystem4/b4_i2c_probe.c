@@ -8,6 +8,11 @@
 #include "b4_processor.h"
 #include "b4_odometry.h"
 #include "b4_safety_dispatch.h"
+#include "b4_terrain_report.h"
+#if APP_TEST
+#include "b4_diagnostics.h"
+#endif
+#include "../subsystem1/s1_comm.h"
 #include "subsystem4.h"
 #include "../subsystem2/subsystem2.h"
 #include "../vehicle_controller/vehicle_controller.h"
@@ -41,6 +46,7 @@ typedef struct {
 	int32_t max_height_mm;
 	int16_t tilt_cdeg;
 	int16_t slope_cdeg;
+	int16_t roll_cdeg;
 	uint16_t dynamic_accel_mg;
 	uint8_t calibration_ready;
 	uint8_t calibration_status;
@@ -48,6 +54,9 @@ typedef struct {
 	uint8_t hump_detected;
 	uint8_t terrain_state;
 	uint8_t height_valid;
+	uint8_t max_height_valid;
+	uint8_t roll_valid;
+	uint8_t hump_state;
 	uint8_t motion_class;
 	uint8_t turn_rate_valid;
 	uint8_t safety_flags;
@@ -89,12 +98,42 @@ typedef struct {
 #if APP_TEST
 static ID b4_test_log_mbf = -1;
 static volatile uint32_t b4_test_log_drops;
+/* Serializes logger output with the one-shot stop message and rearm. */
+static ID b4_test_log_mtx = -1;
+static B4_DIAGNOSTICS b4_diagnostics;
 #endif
 static ID b4_sampler_task_id = -1;
 static ID b4_snapshot_mtx = -1;
 static B4_PROCESSOR_OUTPUT b4_latest_output;
 static uint8_t b4_snapshot_valid;
 static uint8_t b4_runtime_started;
+static B4_PROCESSOR b4_processor;
+static B4_TERRAIN_REPORT b4_terrain_report;
+
+EXPORT uint8_t b4_safety_restart(uint8_t rearm)
+{
+	SYSTIM now;
+	uint8_t ready;
+	if (b4_snapshot_mtx < E_OK ||
+	    tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) < E_OK) return 0U;
+	tk_get_tim(&now);
+	ready = rearm ? b4_processor_rearm(&b4_processor, now.lo)
+		      : b4_processor_restart_ready(&b4_processor, now.lo);
+	if (ready && rearm) {
+		b4_latest_output.safety_flags = 0U;
+	}
+	(void)tk_unl_mtx(b4_snapshot_mtx);
+#if APP_TEST
+	if (ready && rearm) {
+		ER lock_status = tk_loc_mtx(b4_test_log_mtx, TMO_FEVR);
+		if (lock_status >= E_OK) {
+			b4_diagnostics_rearm(&b4_diagnostics, 1U);
+			(void)tk_unl_mtx(b4_test_log_mtx);
+		} else tm_printf((UB *)"Buddy4 logger: rearm lock failed=%d\n", lock_status);
+	}
+#endif
+	return ready;
+}
 
 EXPORT uint8_t b4_get_snapshot(B4_PROCESSOR_OUTPUT *out)
 {
@@ -125,35 +164,36 @@ EXPORT uint8_t b4_get_snapshot(B4_PROCESSOR_OUTPUT *out)
 	return 1U;
 }
 
-static void b4_probe_publish_output(const B4_PROCESSOR_OUTPUT *output)
-{
-	ER status = tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR);
-
-	if (status < E_OK) {
-		tm_printf((UB *)"Buddy4 snapshot: lock failed=%d\n", status);
-		return;
-	}
-	b4_latest_output = *output;
-	b4_snapshot_valid = 1U;
-	status = tk_unl_mtx(b4_snapshot_mtx);
-	if (status < E_OK) {
-		tm_printf((UB *)"Buddy4 snapshot: unlock failed=%d\n", status);
-	}
-}
-
 static void b4_probe_dispatch_stop(const B4_PROCESSOR_OUTPUT *output,
 				  uint32_t sample_timestamp_ms)
 {
+#if APP_TEST
+	(void)sample_timestamp_ms;
+#endif
 	B4_SAFETY_DISPATCH_STATUS status = b4_safety_dispatch_stop(
 		output->safety_flags, motion_stop, vehicle_request_stop);
 
 	if (status == B4_SAFETY_DISPATCH_DISPATCHED) {
+#if APP_TEST
+		/* Finish any in-flight diagnostic record before the safety message;
+		 * subsequent queued records remain muted until accepted rearm. */
+		ER lock_status = tk_loc_mtx(b4_test_log_mtx, TMO_FEVR);
+		if (lock_status >= E_OK) {
+			b4_diagnostics_stop(&b4_diagnostics);
+			tm_printf((UB *)"Buddy4 SAFETY: Lift/overturn detected! Stop requested!\n");
+			(void)tk_unl_mtx(b4_test_log_mtx);
+		} else {
+			tm_printf((UB *)"Buddy4 logger: stop lock failed=%d\n", lock_status);
+			tm_printf((UB *)"Buddy4 SAFETY: Lift/overturn detected! Stop requested!\n");
+		}
+#else
 		tm_printf((UB *)"Buddy4 safety: stop dispatched t=%u ms "
 			  "tilt=%d cdeg slope=%d cdeg terrain=%u flags=0x%02x\n",
 			  (unsigned int)sample_timestamp_ms,
 			  (int)output->tilt_cdeg, (int)output->slope_cdeg,
 			  (unsigned int)output->terrain_state,
 			  (unsigned int)output->safety_flags);
+#endif
 	} else if (status != B4_SAFETY_DISPATCH_NOT_REQUESTED) {
 		tm_printf((UB *)"Buddy4 safety: stop dispatch failed=%d\n",
 			  (int)status);
@@ -162,6 +202,12 @@ static void b4_probe_dispatch_stop(const B4_PROCESSOR_OUTPUT *output,
 
 static void b4_probe_delete_snapshot_mutex(void)
 {
+#if APP_TEST
+	if (b4_test_log_mtx >= E_OK) {
+		(void)tk_del_mtx(b4_test_log_mtx);
+		b4_test_log_mtx = -1;
+	}
+#endif
 	ER status = tk_del_mtx(b4_snapshot_mtx);
 
 	if (status < E_OK) {
@@ -188,6 +234,10 @@ static void b4_probe_store_processed(B4_TEST_PROCESS_OUTPUT *destination,
 	destination->max_height_mm = source->max_height_mm;
 	destination->tilt_cdeg = source->tilt_cdeg;
 	destination->slope_cdeg = source->slope_cdeg;
+	destination->roll_cdeg = source->roll_cdeg;
+	destination->roll_valid = source->roll_valid;
+	destination->hump_state = source->hump_state;
+	destination->max_height_valid = source->max_height_valid;
 	destination->dynamic_accel_mg = source->dynamic_accel_mg;
 	destination->calibration_ready = source->calibration_ready;
 	destination->calibration_status = source->calibration_status;
@@ -338,15 +388,21 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 {
 	B4_TEST_LOG_RECORD record;
 	uint32_t previous_print_us = 0U;
+	uint32_t last_overruns = 0U, last_drops = 0U;
 
 	(void)stacd;
 	(void)exinf;
 
 	b4_probe_wait_for_console();
+	if (tk_loc_mtx(b4_test_log_mtx, TMO_FEVR) >= E_OK) {
+	if (!b4_diagnostics.muted) {
 	tm_printf((UB *)"\n=== Buddy 4 LSM303DLHC timing test (TEST=1) ===\n");
 	tm_printf((UB *)"Acquisition target=100 Hz; USB reports every 100 ms\n");
 	tm_printf((UB *)"Algorithms: sensor -Y is forward, Z is up; "
 		  "terrain slope is positive uphill\n");
+	}
+	(void)tk_unl_mtx(b4_test_log_mtx);
+	}
 
 	while (1) {
 		INT length = tk_rcv_mbf(b4_test_log_mbf, &record, TMO_FEVR);
@@ -357,6 +413,36 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 			continue;
 		}
 
+		if (tk_loc_mtx(b4_test_log_mtx, TMO_FEVR) < E_OK) {
+			tm_printf((UB *)"Buddy4 logger: output lock failed\n");
+			continue;
+		}
+		if (b4_diagnostics.muted) {
+			/* Important errors remain visible even while normal reports are quiet. */
+			if (b4_diagnostics_error(record.read_status, record.io_error,
+					record.processed.event_encode_status,
+					record.processed.events_dropped))
+				tm_printf((UB *)"Buddy4 ERROR: status=%d I2C=%d event_encode=%d events_dropped=%u\n",
+					(int)record.read_status, (int)record.io_error,
+					(int)record.processed.event_encode_status,
+					(unsigned)record.processed.events_dropped);
+			for (uint8_t i = 0U; i < record.processed.event_count; ++i) {
+				B4_EVENT event;
+				B4_EVENT_STATUS result = b4_event_decode(record.processed.events[i],
+					B4_EVENT_ENCODED_SIZE, &event);
+				if (result != B4_EVENT_STATUS_OK)
+					tm_printf((UB *)"Buddy4 ERROR: event decode failed=%d\n", (int)result);
+			}
+			if (record.overrun_events != last_overruns || record.dropped_reports != last_drops)
+				tm_printf((UB *)"Buddy4 ERROR: overruns=%u drops=%u\n",
+					(unsigned)record.overrun_events, (unsigned)record.dropped_reports);
+			last_overruns = record.overrun_events;
+			last_drops = record.dropped_reports;
+			(void)tk_unl_mtx(b4_test_log_mtx);
+			continue;
+		}
+		last_overruns = record.overrun_events;
+		last_drops = record.dropped_reports;
 		{
 			uint32_t print_start_us = b4_probe_timer_us();
 
@@ -425,23 +511,22 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 				  (unsigned int)((record.accel_status >> 3) & 1U),
 				  (unsigned int)((record.accel_status >> 7) & 1U));
 			if (record.processed.calibration_ready != 0U) {
-				tm_printf((UB *)"Buddy4 motion: tilt=%d cdeg "
-					  "slope=%d cdeg dynamic=%u mg "
-					  "class=%u terrain=%u",
+				tm_printf((UB *)"Buddy4 motion: tilt=%d cdeg slope=%d cdeg "
+					  "roll=%s%d cdeg hump_state=%u dynamic=%u mg class=%u terrain=%u",
 					  (int)record.processed.tilt_cdeg,
 					  (int)record.processed.slope_cdeg,
+					  record.processed.roll_valid ? "" : "unavailable/",
+					  (int)record.processed.roll_cdeg,
+					  (unsigned int)record.processed.hump_state,
 					  (unsigned int)record.processed.dynamic_accel_mg,
 					  (unsigned int)record.processed.motion_class,
 					  (unsigned int)record.processed.terrain_state);
-				if (record.processed.height_valid != 0U) {
-					tm_printf((UB*)" current_hump_height=%d mm max_hump_height=%d mm",
-						  (int)record.processed.peak_height_mm,
-						  (int)record.processed.max_height_mm);
-				} else {
-					tm_printf((UB*)" current_hump_height=unavailable max_hump_height=%d mm "
-						  "(forward-only IMU+wheel odometry)",
-						  (int)record.processed.max_height_mm);
-				}
+				if (record.processed.height_valid)
+					tm_printf((UB*)" completed_hump_height=%d mm", (int)record.processed.peak_height_mm);
+				else tm_printf((UB*)" completed_hump_height=unavailable");
+				if (record.processed.max_height_valid)
+					tm_printf((UB*)" max_hump_height=%d mm", (int)record.processed.max_height_mm);
+				else tm_printf((UB*)" max_hump_height=unavailable");
 				if (record.processed.turn_rate_valid != 0U) {
 					tm_printf((UB *)" turn_rate_est=%d mdps\n",
 						  (int)record.processed.turn_rate_mdps);
@@ -454,11 +539,6 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 					  "class=%u\n",
 					  (unsigned int)record.processed.calibration_status,
 					  (unsigned int)record.processed.motion_class);
-			}
-			if ((record.processed.safety_flags &
-			     B4_PROCESSOR_FLAG_STOP_LATCHED) != 0U) {
-				tm_printf((UB *)"Buddy4 safety: lift/overturn stop "
-					  "latched; explicit restart required\n");
 			}
 			{
 				uint8_t event_index;
@@ -509,6 +589,7 @@ EXPORT void b4_i2c_log_task(INT stacd, void *exinf)
 
 			previous_print_us = b4_probe_timer_us() - print_start_us;
 		}
+		(void)tk_unl_mtx(b4_test_log_mtx);
 	}
 }
 #endif
@@ -529,7 +610,6 @@ EXPORT void b4_runtime_task(INT stacd, void *exinf)
 #if APP_TEST
 	B4_TEST_LOG_RECORD record = {0};
 #endif
-	B4_PROCESSOR processor = {0};
 	B4_PROCESSOR_CONFIG processor_config;
 	B4_CALIBRATION_STATUS processor_status;
 	uint32_t sample_sequence = 0U;
@@ -547,7 +627,9 @@ EXPORT void b4_runtime_task(INT stacd, void *exinf)
 	/* Identify/configure once; this task exclusively owns I2C0 afterward. */
 	(void)b4_i2c_probe_run();
 	b4_processor_default_config(&processor_config);
-	processor_status = b4_processor_init(&processor, &processor_config);
+	if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) < E_OK) return;
+	processor_status = b4_processor_init(&b4_processor, &processor_config);
+	(void)tk_unl_mtx(b4_snapshot_mtx);
 	if (processor_status != B4_CALIBRATION_COLLECTING) {
 		tm_printf((UB *)"Buddy4 processor: configuration invalid=%d\n",
 			  (int)processor_status);
@@ -635,14 +717,24 @@ EXPORT void b4_runtime_task(INT stacd, void *exinf)
 				}
 			}
 
-			(void)b4_processor_update(&processor, &sample,
+			if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) < E_OK)
+				goto wait_for_next_tick;
+			(void)b4_processor_update(&b4_processor, &sample,
 						  speed_valid, speed_mm_s,
 						  &processed);
+			b4_latest_output = processed;
+			b4_snapshot_valid = 1U;
+			b4_terrain_report_observe(&b4_terrain_report, &processed, sample.timestamp_ms);
+			(void)tk_unl_mtx(b4_snapshot_mtx);
 			b4_probe_dispatch_stop(&processed, sample.timestamp_ms);
-			b4_probe_publish_output(&processed);
 #if APP_TEST
 			b4_probe_store_processed(&record.processed, &processed);
 #endif
+		} else if (read_status != B4_LSM303DLHC_STATUS_NO_FRESH_DATA) {
+			if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) >= E_OK) {
+				b4_processor_invalidate_hump(&b4_processor);
+				(void)tk_unl_mtx(b4_snapshot_mtx);
+			}
 		}
 
 #if APP_TEST
@@ -696,6 +788,40 @@ wait_for_next_tick:
 	}
 }
 
+/* Keep controller locking and network pacing away from the 100 Hz IMU task. */
+static void b4_terrain_report_task(INT stacd, void *exinf)
+{
+    uint32_t previous_dropped = 0U;
+    (void)stacd; (void)exinf;
+    for (;;) {
+        SYSTIM now;
+        uint16_t height = 0U;
+        uint8_t phase = 0U, submit = 0U;
+        uint32_t dropped = 0U;
+        uint8_t connected = (s1_connection_status() & 3U) == 3U;
+        tk_get_tim(&now);
+        if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) >= E_OK) {
+            submit = b4_terrain_report_next(&b4_terrain_report, now.lo,
+                                              connected, &height, &phase);
+            dropped = b4_terrain_report.dropped;
+            (void)tk_unl_mtx(b4_snapshot_mtx);
+        }
+        if (submit) {
+            if (vehicle_submit_terrain(height, phase)) {
+                if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) >= E_OK) {
+                    b4_terrain_report_commit(&b4_terrain_report, now.lo);
+                    (void)tk_unl_mtx(b4_snapshot_mtx);
+                }
+            } else tm_printf((UB *)"Buddy4 terrain: controller submission failed\n");
+        }
+        if (dropped != previous_dropped) {
+            tm_printf((UB *)"Buddy4 terrain: queue overflow, dropped=%u\n", (unsigned)dropped);
+            previous_dropped = dropped;
+        }
+        (void)tk_dly_tsk(100);
+    }
+}
+
 EXPORT ER b4_runtime_start(void)
 {
 #if APP_TEST
@@ -717,6 +843,13 @@ EXPORT ER b4_runtime_start(void)
 		return (ER)b4_snapshot_mtx;
 	}
 #if APP_TEST
+	b4_test_log_mtx = tk_cre_mtx(&cmtx);
+	if (b4_test_log_mtx < E_OK) {
+		ER error = (ER)b4_test_log_mtx;
+		b4_probe_delete_snapshot_mutex();
+		tm_printf((UB *)"Buddy4 logger: mutex create failed=%d\n", error);
+		return error;
+	}
 	cmbf.mbfatr = TA_TFIFO;
 	cmbf.bufsz = 4 * (INT)sizeof(B4_TEST_LOG_RECORD);
 	cmbf.maxmsz = (INT)sizeof(B4_TEST_LOG_RECORD);
@@ -781,6 +914,11 @@ EXPORT ER b4_runtime_start(void)
 		return (ER)task_id;
 	}
 
+	task_id = app_start_task(b4_terrain_report_task, 20, TP_PRC1, "b4_terrain_report");
+	if (task_id < E_OK) {
+		tm_printf((UB *)"Buddy4 terrain: task start failed=%d\n", task_id);
+		return (ER)task_id;
+	}
 	b4_runtime_started = 1U;
 	return E_OK;
 }

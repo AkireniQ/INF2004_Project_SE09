@@ -1,6 +1,8 @@
 /* Host exercise of the production dispatcher with a simulated motion owner. */
 #include <assert.h>
 #include <stdio.h>
+#include "../../app_program/subsystem4/b4_safety_dispatch.h"
+#include "../../app_program/subsystem4/b4_terrain_report.h"
 #include "../../app_program/vehicle_controller/vehicle_controller.c"
 
 static uint32_t clock_ms;
@@ -13,6 +15,18 @@ static bool motor_busy;
 static S2_STATUS motor;
 static S2_REPLY motor_reply;
 static uint16_t queued_command;
+
+static B4_PROCESSOR imu;
+static bool exercise_imu;
+static unsigned rearm_count;
+uint8_t b4_safety_restart(uint8_t rearm)
+{
+    if (!exercise_imu) return 1U;
+    if (!rearm) return b4_processor_restart_ready(&imu, clock_ms);
+    uint8_t ready = b4_processor_rearm(&imu, clock_ms);
+    rearm_count += ready;
+    return ready;
+}
 
 ID tk_cre_mtx(const T_CMTX *config) { assert(config->mtxatr == TA_INHERIT); return 1; }
 ER tk_del_mtx(ID id) { assert(id == 1); return E_OK; }
@@ -146,6 +160,65 @@ static void settle_step(void)
     clock_ms += 260;
     vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0);
     work();
+}
+
+static void imu_samples(int16_t z, unsigned count)
+{
+    for (unsigned i = 0; i < count; i++) {
+        clock_ms += 10;
+        B4_IMU_SAMPLE sample = {.timestamp_ms = clock_ms,
+            .accel_mg = {0, 0, z}, .flags = B4_IMU_SAMPLE_FLAG_ACCEL_VALID};
+        B4_PROCESSOR_OUTPUT output;
+        (void)b4_processor_update(&imu, &sample, 0U, 0, &output);
+        (void)b4_safety_dispatch_stop(output.safety_flags, motion_stop, vehicle_request_stop);
+    }
+}
+
+static void test_imu_restart(void)
+{
+    vehicle_request_stop();
+    work();
+    motor_stopped();
+    work();
+    model = (VC_MODEL){0};
+    pending = (__typeof__(pending)){0};
+    drive = (__typeof__(drive)){0};
+    exercise_imu = true;
+    assert(b4_processor_init(&imu, NULL) == B4_CALIBRATION_COLLECTING);
+    imu_samples(1000, 110);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    assert(vehicle_request_start());
+    work();
+    assert(vehicle_state() == VC_FOLLOW_LINE && rearm_count == 1);
+    unsigned stops = stop_count;
+    imu_samples(0, 3);
+    work();
+    motor_stopped();
+    work();
+    assert(vehicle_state() == VC_IDLE && stop_count > stops && imu.stop_latched);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    assert(!vehicle_request_start() && rearm_count == 1);
+    imu_samples(1000, 40);
+    assert(imu.stop_latched); /* Setting down alone does not restart. */
+    assert(!vehicle_request_start() && imu.stop_latched && rearm_count == 1); /* Stale line. */
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    assert(vehicle_request_start());
+    imu_samples(0, 1); /* Hazard after enqueue, before worker acceptance. */
+    work();
+    assert(vehicle_state() == VC_IDLE && imu.stop_latched && rearm_count == 1);
+    imu_samples(1000, 40);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    assert(vehicle_request_start());
+    assert(imu.stop_latched); /* Enqueue does not rearm. */
+    work();
+    assert(vehicle_state() == VC_FOLLOW_LINE && !imu.stop_latched && rearm_count == 2);
+    stops = stop_count;
+    imu_samples(-1000, 40);
+    work();
+    motor_stopped();
+    work();
+    assert(vehicle_state() == VC_IDLE && imu.stop_latched && stop_count > stops);
+    puts("PASS Buddy 4 blocks unsafe/queued restart and stops again after explicit restart");
 }
 
 int main(void)
@@ -459,8 +532,4 @@ int main(void)
     scans_before = scan_count;
     assert(vehicle_request_start());
     work();
-    assert(model.avoidance.phase == S5_PROFILE_PATH && scan_count == scans_before + 1 &&
-           !queued_command);
-
-    puts("PASS sonar pauses for the planned bypass, resumes on tape and wakes on local STOP");
-}
+    assert(model.avoidance.phase == S5_PROFILE_PATH && scan_count == scans_before + 

@@ -35,8 +35,8 @@
  * - flags: B4_EVENT_FLAG_VALUE_VALID when value contains a measurement or
  *   code; otherwise value must be zero.
  * - value: signed 32-bit type-specific value. Units are centidegrees for
- *   tilt, terrain-start slope, ramp slope, and hump slope; millimetres for
- *   an odometry-assisted peak-height estimate; and milli-degrees/second for
+ *   tilt, terrain-start slope, ramp slope, and right-side peak roll; millimetres for
+ *   a roll-based peak-height estimate; and milli-degrees/second for
  *   estimated magnetic heading rate. Motion-class values use the
  *   B4_MOTION_CLASS codes. Terrain-end, calibration-ready, and
  *   lift/overturn events carry no value. Event code 0x06 is reserved.

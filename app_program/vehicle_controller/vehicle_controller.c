@@ -7,6 +7,7 @@
 #include "../subsystem3/subsystem3.h"
 #include "../subsystem3/line_steering.h"
 #include "../subsystem5/subsystem5.h"
+#include "../subsystem4/subsystem4.h"
 #ifndef VC_AUTO_START
 #if TM_MQTT
 #define VC_AUTO_START 0
@@ -165,6 +166,14 @@ static VC_INPUT controller_input(BOOL ready, BOOL linked, unsigned faults, bool 
         },
     };
 }
+/* Use the existing startup blocker on the wire; no telemetry format change. */
+static VC_START_BLOCK start_block(const VC_INPUT *input)
+{
+    VC_START_BLOCK block = vc_core_start_block(&model, input);
+    if (block == VC_START_READY && input->drive_failed) return VC_START_MOTOR;
+    if (block == VC_START_READY && !b4_safety_restart(0U)) return VC_START_STARTUP;
+    return block;
+}
 BOOL vehicle_request_start(void)
 {
     if (!lock()) return FALSE;
@@ -172,7 +181,7 @@ BOOL vehicle_request_start(void)
     bool busy = false;
     BOOL ready = motion_get_feedback(&motor, NULL, &busy);
     VC_INPUT input = controller_input(ready, link_ready(), s2_get_bits(&motor, 5, 4), busy, now_ms());
-    VC_START_BLOCK block = vc_core_start_block(&model, &input);
+    VC_START_BLOCK block = start_block(&input);
     data.last_start_reject = block;
     BOOL ok = block == VC_START_READY;
     if (ok && (!vc_core_running(&model) || model.avoidance.phase == S5_WAIT_PATH)) {
@@ -340,7 +349,7 @@ BOOL vehicle_get_snapshot(VEHICLE_SNAPSHOT *out)
     out->timing_fault_gap_us=s2_core_timing_fault_gap_us();
     out->control_gap_limit_us=MAX_CONTROL_GAP_US;
     VC_INPUT input = controller_input(ready, linked, out->motor_faults, busy, out->timestamp_ms);
-    out->start_block = vc_core_start_block(&model, &input);
+    out->start_block = start_block(&input);
     unlock();return TRUE;
 }
 BOOL vehicle_is_following(void)
@@ -481,11 +490,16 @@ static TMO vehicle_service_once(void)
     tracking_straight = straight;
     in.avoidance.can_retrace = straight && now - straight_since >= VC_RETRACE_MIN_MS;
     in.avoidance.can_retrace_far = straight && now - straight_since >= VC_RETRACE_LONG_MS;
-    VC_START_BLOCK blocker = vc_core_start_block(&model, &in);
+    VC_START_BLOCK blocker = start_block(&in);
     if (pending.auto_start && blocker == VC_START_READY) {
         in.start = TRUE;
         pending.auto_start = false;
     }
+    /* Only an explicit START accepted by the worker rearms Buddy 4. The
+     * sampler releases its mutex before requesting a controller stop. */
+    if (pending.start && blocker == VC_START_READY &&
+        !b4_safety_restart(1U)) blocker = VC_START_STARTUP;
+    if (blocker != VC_START_READY) in.start = false;
     if (pending.start && blocker != VC_START_READY) data.last_start_reject = blocker;
     pending.start = pending.stop = pending.line_stop = false;
     unsigned previous_reason = model.reason;

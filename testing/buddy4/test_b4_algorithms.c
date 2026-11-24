@@ -61,30 +61,6 @@ static B4_IMU_SAMPLE make_sample(uint32_t timestamp_ms,
 	return sample;
 }
 
-static B4_IMU_SAMPLE make_forward_slope_sample(uint32_t timestamp_ms,
-					       int16_t forward_mg)
-{
-	int16_t magnitude = forward_mg;
-	int16_t up_mg;
-
-	if (magnitude < 0) {
-		magnitude = (int16_t)-magnitude;
-	}
-	if (magnitude >= 87) {
-		up_mg = 996;
-	} else if (magnitude >= 70) {
-		up_mg = 998;
-	} else if (magnitude >= 43) {
-		up_mg = 999;
-	} else if (magnitude >= 26) {
-		up_mg = 1000;
-	} else {
-		up_mg = 1000;
-	}
-	return make_sample(timestamp_ms, 0,
-			   (int16_t)-forward_mg, up_mg, 1000, 0);
-}
-
 static void init_processor(B4_PROCESSOR *processor)
 {
 	B4_PROCESSOR_CONFIG config;
@@ -191,257 +167,6 @@ static void test_tilt_hysteresis(void)
 	CHECK(output.tilt_active == 0U);
 }
 
-static void test_shallow_hump_terrain_and_height(void)
-{
-	B4_PROCESSOR processor;
-	B4_PROCESSOR_OUTPUT output;
-	uint32_t timestamp_ms = 0U;
-	uint8_t saw_terrain_start = 0U;
-	uint8_t saw_hump = 0U;
-	uint8_t saw_valid_height = 0U;
-	uint8_t saw_uphill_slope = 0U;
-	uint8_t saw_downhill_slope = 0U;
-	uint8_t saw_terrain_end = 0U;
-	uint8_t index;
-	static const int16_t slope_transition_mg[] = {
-		0, 26, 43, 61, 70, 87
-	};
-	static const int16_t downhill_ramp_mg[] = {
-		87, 70, 61, 43, 26, 0
-	};
-	uint8_t segment;
-
-	init_processor(&processor);
-	CHECK(processor.config.slope_enter_cdeg == 300U);
-	CHECK(processor.config.slope_exit_cdeg == 200U);
-	CHECK(processor.config.terrain_transition_samples == 5U);
-	CHECK(processor.config.terrain_end_samples == 75U);
-	calibrate_flat(&processor, &output, &timestamp_ms);
-
-	for (index = 0U; index < 120U; index++) {
-		int16_t noise_mg = ((index % 4U) < 2U) ? 18 : -18;
-		B4_IMU_SAMPLE sample =
-			make_forward_slope_sample(timestamp_ms, noise_mg);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		CHECK(output.terrain_state == B4_TERRAIN_FLAT);
-		timestamp_ms += 10U;
-	}
-
-	for (segment = 0U;
-	     segment < (uint8_t)(sizeof(slope_transition_mg) /
-				 sizeof(slope_transition_mg[0]));
-	     segment++) {
-		for (index = 0U; index < 10U; index++) {
-			B4_IMU_SAMPLE sample = make_forward_slope_sample(
-				timestamp_ms, slope_transition_mg[segment]);
-
-			(void)b4_processor_update(&processor, &sample, 1U, 200,
-						  &output);
-			saw_terrain_start |= output_has_event(
-				&output, B4_EVENT_TERRAIN_START, 1U);
-			timestamp_ms += 10U;
-		}
-	}
-	for (index = 0U; index < 52U; index++) {
-		B4_IMU_SAMPLE sample =
-			make_forward_slope_sample(timestamp_ms, 87);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		saw_uphill_slope |=
-			(output.slope_cdeg >= 400) &&
-			(output.slope_cdeg <= 600);
-		timestamp_ms += 10U;
-	}
-	CHECK(output.terrain_state == B4_TERRAIN_ASCENDING);
-	CHECK(saw_uphill_slope != 0U);
-
-	for (index = 0U; index < 20U; index++) {
-		B4_IMU_SAMPLE sample =
-			make_forward_slope_sample(timestamp_ms, 0);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		timestamp_ms += 10U;
-	}
-	for (segment = 0U;
-	     segment < (uint8_t)(sizeof(slope_transition_mg) /
-				 sizeof(slope_transition_mg[0]));
-	     segment++) {
-		for (index = 0U; index < 10U; index++) {
-			int16_t forward_mg =
-				(int16_t)-slope_transition_mg[segment];
-			B4_IMU_SAMPLE sample = make_forward_slope_sample(
-				timestamp_ms, forward_mg);
-
-			(void)b4_processor_update(&processor, &sample, 1U, 200,
-						  &output);
-			saw_downhill_slope |=
-				(output.slope_cdeg <= -400) &&
-				(output.slope_cdeg >= -600);
-			saw_hump |= output_has_event(
-				&output, B4_EVENT_HUMP_DETECTED, 1U);
-			saw_valid_height |= output_has_event(
-				&output, B4_EVENT_HUMP_PEAK_HEIGHT, 1U);
-			timestamp_ms += 10U;
-		}
-	}
-	CHECK(output.terrain_state == B4_TERRAIN_DESCENDING);
-	for (index = 0U; index < 52U; index++) {
-		B4_IMU_SAMPLE sample =
-			make_forward_slope_sample(timestamp_ms, -87);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		saw_hump |= output_has_event(
-			&output, B4_EVENT_HUMP_DETECTED, 1U);
-		saw_valid_height |= output_has_event(
-			&output, B4_EVENT_HUMP_PEAK_HEIGHT, 1U);
-		timestamp_ms += 10U;
-	}
-	for (segment = 0U;
-	     segment < (uint8_t)(sizeof(downhill_ramp_mg) /
-				 sizeof(downhill_ramp_mg[0]));
-	     segment++) {
-		for (index = 0U; index < 10U; index++) {
-			int16_t forward_mg =
-				(int16_t)-downhill_ramp_mg[segment];
-			B4_IMU_SAMPLE sample = make_forward_slope_sample(
-				timestamp_ms, forward_mg);
-
-			(void)b4_processor_update(&processor, &sample, 1U, 200,
-						  &output);
-			saw_terrain_end |= output_has_event(
-				&output, B4_EVENT_TERRAIN_END, 0U);
-			timestamp_ms += 10U;
-		}
-	}
-	CHECK(saw_terrain_start != 0U);
-	CHECK(saw_hump != 0U);
-	CHECK(saw_downhill_slope != 0U);
-	CHECK(saw_valid_height != 0U);
-	CHECK(saw_terrain_end != 0U);
-	CHECK(output.terrain_state == B4_TERRAIN_FLAT);
-	CHECK(output.max_height_mm >= 12);
-	CHECK(output.max_height_mm <= 25);
-}
-
-static void test_simulated_speed_two_centimetre_hump(void)
-{
-	B4_PROCESSOR processor;
-	B4_PROCESSOR_OUTPUT output;
-	uint32_t timestamp_ms = 0U;
-	uint8_t saw_hump = 0U;
-	uint8_t saw_valid_height = 0U;
-	uint8_t index;
-
-	init_processor(&processor);
-	calibrate_flat(&processor, &output, &timestamp_ms);
-
-	/* 22.5 cm at 150 mm/s is 1.5 s, or 150 samples at 100 Hz. */
-	for (index = 0U; index < 150U; index++) {
-		B4_IMU_SAMPLE sample =
-			make_forward_slope_sample(timestamp_ms, 89);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 150,
-					  &output);
-		timestamp_ms += 10U;
-	}
-	CHECK(output.terrain_state == B4_TERRAIN_ASCENDING);
-	CHECK(output.height_valid != 0U);
-	CHECK(output.peak_height_mm >= 16);
-	CHECK(output.peak_height_mm <= 22);
-
-	for (index = 0U; index < 150U; index++) {
-		B4_IMU_SAMPLE sample =
-			make_forward_slope_sample(timestamp_ms, -89);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 150,
-					  &output);
-		saw_hump |= output_has_event(
-			&output, B4_EVENT_HUMP_DETECTED, 1U);
-		saw_valid_height |= output_has_event(
-			&output, B4_EVENT_HUMP_PEAK_HEIGHT, 1U);
-		timestamp_ms += 10U;
-	}
-	CHECK(output.terrain_state == B4_TERRAIN_DESCENDING);
-
-	for (index = 0U; index < 80U; index++) {
-		B4_IMU_SAMPLE sample =
-			make_forward_slope_sample(timestamp_ms, 0);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 150,
-					  &output);
-		timestamp_ms += 10U;
-	}
-
-	CHECK(saw_hump != 0U);
-	CHECK(saw_valid_height != 0U);
-	CHECK(output.terrain_state == B4_TERRAIN_FLAT);
-	CHECK(output.max_height_mm >= 16);
-	CHECK(output.max_height_mm <= 22);
-}
-
-static void test_ramp_and_hump_height(void)
-{
-	B4_PROCESSOR processor;
-	B4_PROCESSOR_OUTPUT output;
-	uint32_t timestamp_ms = 0U;
-	uint8_t saw_terrain_start = 0U;
-	uint8_t saw_hump = 0U;
-	uint8_t saw_valid_height = 0U;
-	uint8_t saw_positive_uphill_slope = 0U;
-	uint8_t saw_negative_downhill_slope = 0U;
-	uint8_t index;
-
-	init_processor(&processor);
-	calibrate_flat(&processor, &output, &timestamp_ms);
-	for (index = 0U; index < 50U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, -208, 978, 1000, 0);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		saw_positive_uphill_slope |= output.slope_cdeg >= 800;
-		saw_terrain_start |= output_has_event(
-			&output, B4_EVENT_TERRAIN_START, 1U);
-		timestamp_ms += 10U;
-	}
-	CHECK(output.terrain_state == B4_TERRAIN_ASCENDING);
-	CHECK(saw_positive_uphill_slope != 0U);
-
-	for (index = 0U; index < 50U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, 208, 978, 1000, 0);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		saw_negative_downhill_slope |= output.slope_cdeg <= -800;
-		saw_hump |= output_has_event(&output, B4_EVENT_HUMP_DETECTED, 1U);
-		saw_valid_height |= output_has_event(
-			&output, B4_EVENT_HUMP_PEAK_HEIGHT, 1U);
-		timestamp_ms += 10U;
-	}
-	CHECK(saw_terrain_start != 0U);
-	CHECK(saw_negative_downhill_slope != 0U);
-	CHECK(saw_hump != 0U);
-	CHECK(saw_valid_height != 0U);
-	CHECK(processor.peak_height_um > 0);
-	CHECK(processor.peak_height_um < INT64_C(100000));
-
-	for (index = 0U; index < 80U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, 0, 1000, 1000, 0);
-
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		timestamp_ms += 10U;
-	}
-	CHECK(output.terrain_state == B4_TERRAIN_FLAT);
-}
-
 static void test_ramp_event_and_end(void)
 {
 	B4_PROCESSOR processor;
@@ -452,6 +177,7 @@ static void test_ramp_event_and_end(void)
 	uint8_t index;
 
 	init_processor(&processor);
+	processor.config.effective_lateral_distance_mm = 120U;
 	calibrate_flat(&processor, &output, &timestamp_ms);
 	for (index = 0U; index < 35U; index++) {
 		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
@@ -473,6 +199,7 @@ static void test_ramp_event_and_end(void)
 		timestamp_ms += 10U;
 	}
 	CHECK(saw_ramp != 0U);
+	CHECK(!output.max_height_valid && !output.hump_detected);
 	CHECK(saw_terrain_end != 0U);
 	CHECK(output.terrain_state == B4_TERRAIN_FLAT);
 }
@@ -496,43 +223,6 @@ static void test_ramp_without_odometry_has_no_height(void)
 	CHECK(output.terrain_state == B4_TERRAIN_ASCENDING);
 	CHECK(output.height_valid == 0U);
 	CHECK(output.peak_height_mm == 0);
-}
-
-static void test_hump_without_odometry_marks_height_unavailable(void)
-{
-	B4_PROCESSOR processor;
-	B4_PROCESSOR_OUTPUT output;
-	uint32_t timestamp_ms = 0U;
-	uint8_t saw_unavailable_height = 0U;
-	uint8_t index;
-
-	init_processor(&processor);
-	calibrate_flat(&processor, &output, &timestamp_ms);
-	for (index = 0U; index < 40U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, -208, 978, 1000, 0);
-
-		(void)b4_processor_update(&processor, &sample, 0U, 0, &output);
-		timestamp_ms += 10U;
-	}
-	for (index = 0U; index < 40U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, 208, 978, 1000, 0);
-		uint8_t event_index;
-
-		(void)b4_processor_update(&processor, &sample, 0U, 0, &output);
-		for (event_index = 0U;
-		     event_index < output.event_count; event_index++) {
-			if ((output.events[event_index].type ==
-			     B4_EVENT_HUMP_PEAK_HEIGHT) &&
-			    ((output.events[event_index].flags &
-			      B4_EVENT_FLAG_VALUE_VALID) == 0U)) {
-				saw_unavailable_height = 1U;
-			}
-		}
-		timestamp_ms += 10U;
-	}
-	CHECK(saw_unavailable_height != 0U);
 }
 
 static void test_vibration_without_collision_detection(void)
@@ -816,77 +506,6 @@ static void test_calibration_rejects_movement(void)
 	CHECK(calibrator.sample_count == 0U);
 }
 
-static void test_multiple_humps_retain_run_maximum(void)
-{
-	B4_PROCESSOR processor;
-	B4_PROCESSOR_OUTPUT output;
-	uint32_t timestamp_ms = 0U;
-	int32_t first_max;
-	uint8_t saw_first_hump = 0U;
-	uint8_t saw_second_hump = 0U;
-	uint8_t index;
-
-	init_processor(&processor);
-	calibrate_flat(&processor, &output, &timestamp_ms);
-
-	for (index = 0U; index < 50U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, -208, 978, 1000, 0);
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		timestamp_ms += 10U;
-	}
-	for (index = 0U; index < 50U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, 208, 978, 1000, 0);
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		if (output.hump_detected != 0U) {
-			saw_first_hump = 1U;
-		}
-		timestamp_ms += 10U;
-	}
-	for (index = 0U; index < 40U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, 0, 1000, 1000, 0);
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		timestamp_ms += 10U;
-	}
-	first_max = output.max_height_mm;
-	CHECK(saw_first_hump != 0U);
-	CHECK(first_max > 0);
-
-	for (index = 0U; index < 30U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, -208, 978, 1000, 0);
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		timestamp_ms += 10U;
-	}
-	for (index = 0U; index < 30U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, 208, 978, 1000, 0);
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		if (output.hump_detected != 0U) {
-			saw_second_hump = 1U;
-		}
-		timestamp_ms += 10U;
-	}
-	for (index = 0U; index < 40U; index++) {
-		B4_IMU_SAMPLE sample = make_sample(timestamp_ms,
-						   0, 0, 1000, 1000, 0);
-		(void)b4_processor_update(&processor, &sample, 1U, 200,
-					  &output);
-		timestamp_ms += 10U;
-	}
-
-	CHECK(saw_second_hump != 0U);
-	CHECK(output.max_height_mm == first_max);
-	CHECK(output.max_height_mm >= output.peak_height_mm);
-}
-
 static void test_forward_only_odometry(void)
 {
 	int32_t speed_mm_s = 0;
@@ -918,16 +537,163 @@ static void test_odometry_validity(void)
 				   &speed_mm_s) == B4_ODOMETRY_NOT_FORWARD);
 }
 
+static void test_safety_rearm(void)
+{
+	B4_PROCESSOR processor;
+	B4_PROCESSOR_OUTPUT output;
+	uint32_t timestamp_ms = 0U;
+	init_processor(&processor);
+	CHECK(!b4_processor_rearm(&processor, timestamp_ms));
+	calibrate_flat(&processor, &output, &timestamp_ms);
+	for (unsigned cycle = 0; cycle < 2; cycle++) {
+		unsigned requests = 0;
+		for (unsigned i = 0; i < 30; i++) {
+			B4_IMU_SAMPLE sample = make_sample(timestamp_ms, 0, 0, -1000, 1000, 0);
+			(void)b4_processor_update(&processor, &sample, 0U, 0, &output);
+			requests += !!(output.safety_flags & B4_PROCESSOR_FLAG_STOP_REQUESTED);
+			timestamp_ms += 10U;
+		}
+		CHECK(requests == 1);
+		CHECK(!b4_processor_rearm(&processor, timestamp_ms));
+		CHECK(processor.stop_latched);
+		for (unsigned i = 0; i < 40; i++) {
+			B4_IMU_SAMPLE sample = make_sample(timestamp_ms, 0, 0, 1000, 1000, 0);
+			(void)b4_processor_update(&processor, &sample, 0U, 0, &output);
+			timestamp_ms += 10U;
+		}
+		CHECK(processor.stop_latched); /* Recovery alone must not rearm. */
+		CHECK(b4_processor_restart_ready(&processor, timestamp_ms));
+		CHECK(!b4_processor_rearm(&processor, timestamp_ms + 101U));
+		CHECK(processor.stop_latched);
+		CHECK(b4_processor_rearm(&processor, timestamp_ms));
+		CHECK(!processor.stop_latched);
+	}
+	B4_IMU_SAMPLE sample = make_sample(timestamp_ms, 0, 0, 0, 1000, 0);
+	(void)b4_processor_update(&processor, &sample, 0U, 0, &output);
+	CHECK(!b4_processor_rearm(&processor, timestamp_ms)); /* First low-g sample blocks START. */
+	sample.timestamp_ms += 200U;
+	sample.flags = B4_IMU_SAMPLE_FLAG_MAG_VALID;
+	(void)b4_processor_update(&processor, &sample, 0U, 0, &output);
+	CHECK(!b4_processor_rearm(&processor, sample.timestamp_ms));
+}
+
+static void roll_samples(B4_PROCESSOR *p, B4_PROCESSOR_OUTPUT *out,
+                         uint32_t *t, int16_t x, int16_t z, unsigned count,
+                         unsigned *events, unsigned *valid_events)
+{
+    for (unsigned i = 0; i < count; ++i) {
+        B4_IMU_SAMPLE sample = make_sample(*t, x, 0, z, 1000, 0);
+        (void)b4_processor_update(p, &sample, 0U, 0, out);
+        *events += out->hump_detected;
+        *valid_events += output_has_event(out, B4_EVENT_HUMP_PEAK_HEIGHT, 1U);
+        *t += 10;
+    }
+}
+
+static void test_right_wheel_humps(void)
+{
+    B4_PROCESSOR p;
+    B4_PROCESSOR_OUTPUT out;
+    B4_PROCESSOR_CONFIG config;
+    uint32_t t = 0;
+    unsigned events = 0, valid = 0;
+    b4_processor_default_config(&config);
+    CHECK(config.effective_lateral_distance_mm == 111U);
+    config.effective_lateral_distance_mm = 120U; /* synthetic only */
+    config.calibration.required_samples = 10U;
+    CHECK(b4_processor_init(&p, &config) == B4_CALIBRATION_COLLECTING);
+    calibrate_flat(&p, &out, &t);
+    roll_samples(&p, &out, &t, 0, 1000, 10, &events, &valid);
+    roll_samples(&p, &out, &t, 174, 985, 30, &events, &valid);
+    CHECK(out.roll_valid && out.roll_cdeg < -900 && events == 0);
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 0 && !out.max_height_valid);
+    roll_samples(&p, &out, &t, -174, 985, 30, &events, &valid);
+    CHECK(out.roll_valid && out.roll_cdeg > 900 && out.slope_cdeg == 0);
+    CHECK(out.hump_state == B4_HUMP_RIGHT_RISE && events == 0);
+    CHECK(!out.max_height_valid); /* An unfinished rise must not count. */
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 1 && valid == 1 && out.max_height_valid);
+    CHECK(out.max_height_mm >= 19 && out.max_height_mm <= 23);
+    int first = out.max_height_mm;
+    roll_samples(&p, &out, &t, -87, 996, 30, &events, &valid);
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 2 && valid == 2 && out.max_height_mm == first);
+    roll_samples(&p, &out, &t, -342, 940, 30, &events, &valid);
+    CHECK(out.max_height_mm == first); /* no update before return to level */
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 3 && valid == 3 && out.max_height_mm > first);
+    int maximum = out.max_height_mm;
+    roll_samples(&p, &out, &t, -500, 866, 30, &events, &valid);
+    B4_IMU_SAMPLE bad = make_sample(t, -500, 0, 866, 1000, 0);
+    bad.flags |= B4_IMU_SAMPLE_FLAG_ACCEL_OVERRUN;
+    (void)b4_processor_update(&p, &bad, 0U, 0, &out); t += 10;
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 4 && valid == 3 && out.max_height_mm == maximum);
+    roll_samples(&p, &out, &t, -500, 866, 30, &events, &valid);
+    t += 200; /* Missing acceleration history. */
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 5 && valid == 3 && out.max_height_mm == maximum);
+    roll_samples(&p, &out, &t, -500, 866, 30, &events, &valid);
+    b4_processor_invalidate_hump(&p); /* I2C read failure */
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 6 && valid == 3 && out.max_height_mm == maximum);
+    roll_samples(&p, &out, &t, -500, 866, 30, &events, &valid);
+    bad = make_sample(t, 0, 0, 0, 1000, 0);
+    (void)b4_processor_update(&p, &bad, 0U, 0, &out); t += 10;
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 7 && valid == 3 && out.max_height_mm == maximum);
+}
+
+static void test_longitudinal_reversal(void)
+{
+    B4_PROCESSOR p;
+    B4_PROCESSOR_OUTPUT out;
+    uint32_t t = 0;
+    unsigned humps = 0;
+    init_processor(&p);
+    p.config.effective_lateral_distance_mm = 120U;
+    calibrate_flat(&p, &out, &t);
+    for (unsigned phase = 0; phase < 3; phase++) {
+        int16_t y = phase == 0 ? -174 : phase == 1 ? 174 : 0;
+        int16_t z = phase == 2 ? 1000 : 985;
+        for (unsigned i = 0; i < 35; i++) {
+            B4_IMU_SAMPLE sample = make_sample(t, 0, y, z, 1000, 0);
+            (void)b4_processor_update(&p, &sample, 1U, 200, &out);
+            humps += out.hump_detected;
+            t += 10;
+        }
+        if (phase == 0) CHECK(out.terrain_state == B4_TERRAIN_ASCENDING && out.slope_cdeg > 900);
+        if (phase == 1) CHECK(out.terrain_state == B4_TERRAIN_DESCENDING && out.slope_cdeg < -900);
+    }
+    CHECK(out.terrain_state == B4_TERRAIN_FLAT && humps == 0 && !out.max_height_valid);
+}
+
+static void test_unconfigured_roll_height(void)
+{
+    B4_PROCESSOR p;
+    B4_PROCESSOR_OUTPUT out;
+    uint32_t t = 0;
+    unsigned events = 0, valid = 0;
+    init_processor(&p);
+    p.config.effective_lateral_distance_mm = 0U;
+    calibrate_flat(&p, &out, &t);
+    roll_samples(&p, &out, &t, 0, 1000, 10, &events, &valid);
+    roll_samples(&p, &out, &t, -174, 985, 30, &events, &valid);
+    roll_samples(&p, &out, &t, 0, 1000, 30, &events, &valid);
+    CHECK(events == 1 && valid == 0 && !out.max_height_valid && !out.height_valid);
+}
+
 int main(void)
 {
+	test_right_wheel_humps();
+	test_unconfigured_roll_height();
+	test_longitudinal_reversal();
+	test_safety_rearm();
 	test_calibration_and_flat();
 	test_tilt_hysteresis();
-	test_shallow_hump_terrain_and_height();
-	test_simulated_speed_two_centimetre_hump();
-	test_ramp_and_hump_height();
 	test_ramp_event_and_end();
 	test_ramp_without_odometry_has_no_height();
-	test_hump_without_odometry_marks_height_unavailable();
 	test_vibration_without_collision_detection();
 	test_lift_detection_latches_one_stop_request();
 	test_overturn_detection_and_stop_latch();
@@ -936,7 +702,6 @@ int main(void)
 	test_safety_stop_dispatch();
 	test_compass_turn_estimate();
 	test_calibration_rejects_movement();
-	test_multiple_humps_retain_run_maximum();
 	test_forward_only_odometry();
 	test_odometry_validity();
 
