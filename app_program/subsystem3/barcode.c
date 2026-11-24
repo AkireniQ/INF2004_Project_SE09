@@ -20,7 +20,8 @@ LOCAL const C39 c39[] = {
 };
 
 LOCAL BOOL in_bar;
-LOCAL INT  run, nwin, idle, win[BC_ELEMENTS];
+LOCAL unsigned run, nwin, idle;
+LOCAL INT win[BC_ELEMENTS];
 LOCAL char pending;
 
 LOCAL char decode_char(const INT *w)            /* w[0..8]: bar, space, bar, ... */
@@ -96,13 +97,13 @@ EXPORT void barcode_feed(INT dark)
     if (!in_bar && dark > BC_TH_HIGH)    { bar = TRUE; }
     else if (in_bar && dark < BC_TH_LOW) { bar = FALSE; }
 
-    if (bar == in_bar) { run++; return; }
+    if (bar == in_bar) {
+        if (run <= BC_MAX_RUN) { run++; }
+        return;
+    }
 
     was_bar = in_bar;                           /* the element that just ended */
     if (run > BC_MAX_RUN || run < BC_GLITCH) {
-        if (nwin >= 8) {
-            tm_printf((UB*)"[S3] bc: reset after %d elements (run=%d)\n", nwin, run);
-        }
         nwin = 0;
     } else {
         if (nwin == BC_ELEMENTS) {              /* slide the window by one */
@@ -114,11 +115,6 @@ EXPORT void barcode_feed(INT dark)
         if (was_bar && nwin == BC_ELEMENTS) {   /* 29 ending in a bar = starts with a bar */
             c = decode_any(win);
             if (c != 0) { pending = c; nwin = 0; }
-            else {
-                tm_printf((UB*)"[S3] bc: 29 elements, no match:");
-                for (i = 0; i < BC_ELEMENTS; i++) { tm_printf((UB*)" %d", win[i]); }
-                tm_printf((UB*)"\n");
-            }
         }
     }
     in_bar = bar;
