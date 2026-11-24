@@ -241,25 +241,9 @@ int main(void)
     work();
     assert(vehicle_request_start());
     vehicle_submit_obstacle_range(S5_UNKNOWN_RANGE);
-    assert(work() > 0 && vehicle_state() == VC_AVOIDING && !command_count);
-    unsigned scan_limit;
-    assert(scan_count == 1 && vehicle_obstacle_scan_request(&request, &scan_limit));
-    assert(scan_limit == S5_FOLLOW_CLEAR_MM);
-    clock_ms += 20;
-    vehicle_finish_obstacle_scan(NULL, request);
-    assert(work() > 0 && scan_count == 2 && vehicle_obstacle_scan_request(&request, NULL));
-    clock_ms += 20;
-    vehicle_finish_obstacle_scan(NULL, request);
-    assert(work() > 0 && !command_count && vehicle_state() == VC_AVOIDING);
-    assert(vehicle_get_snapshot(&snapshot) && snapshot.avoidance_phase == S5_WAIT_PATH &&
-           snapshot.obstacle_no_echo && snapshot.start_block == VC_START_READY);
-
-    vehicle_submit_obstacle_range(S5_OPEN_RANGE);
-    assert(!event_flags && !command_count);
-    vehicle_submit_obstacle_range(S5_OPEN_RANGE);
-    assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE && !command_count);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
-    assert(work() > 0 && command_count == 1);
+    assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE && command_count == 1);
+    assert(!scan_count && !vehicle_obstacle_scan_request(&request, NULL));
+    assert(vehicle_get_snapshot(&snapshot) && snapshot.obstacle_no_echo && !snapshot.obstacle_blocked);
     vehicle_submit_line(0, 0, 0, 24, 24, FALSE, 0);
     work();
     assert(command_count == 1);
@@ -273,13 +257,21 @@ int main(void)
     motor_acknowledge(S2_REPLY_OK);
     work();
 
+    for (unsigned i = 0; i < 3; ++i) {
+        vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
+        assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE);
+        assert(stop_count == 1 && scan_count == 0);
+    }
+
     vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     work();
-    assert(vehicle_state() == VC_AVOIDING && stop_count == 2 && scan_count == 2);
+    assert(vehicle_state() == VC_AVOIDING && stop_count == 2 && scan_count == 0);
     assert(!vehicle_obstacle_scan_request(&request, NULL));
     motor_stopped();
     work();
-    assert(scan_count == 3 && vehicle_obstacle_scan_request(&request, NULL));
+    unsigned scan_limit;
+    assert(scan_count == 1 && vehicle_obstacle_scan_request(&request, &scan_limit));
+    assert(scan_limit == S5_FOLLOW_CLEAR_MM);
     assert(vehicle_obstacle_scan_current(request));
 
     connection = 0;
@@ -486,15 +478,15 @@ int main(void)
     assert(vehicle_state() == VC_IDLE && model.avoidance.failure == S5_FAIL_STOP);
 
     vehicle_submit_obstacle_range(500);
-    assert(!obstacle_blocked(clock_ms));
+    assert(!obstacle_blocked());
     vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM + 1);
-    assert(!obstacle_blocked(clock_ms) && obstacle_range.blocked);
+    assert(!obstacle_blocked() && obstacle_range.blocked);
     vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
-    assert(obstacle_blocked(clock_ms));
+    assert(obstacle_blocked());
     vehicle_submit_obstacle_range(S5_FOLLOW_CLEAR_MM);
-    assert(obstacle_blocked(clock_ms));
+    assert(obstacle_blocked());
     vehicle_submit_obstacle_range(S5_FOLLOW_CLEAR_MM + 1);
-    assert(!obstacle_blocked(clock_ms));
+    assert(!obstacle_blocked());
 
     vehicle_submit_obstacle_range(S5_OPEN_RANGE);
     vehicle_submit_obstacle_range(S5_OPEN_RANGE);
@@ -530,6 +522,19 @@ int main(void)
     vehicle_submit_obstacle_range(200);
     work();
     scans_before = scan_count;
+    vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
+    work();
+    assert(obstacle_blocked() && !range_valid(clock_ms));
     assert(vehicle_request_start());
     work();
-    assert(model.avoidance.phase == S5_PROFILE_PATH && scan_count == scans_before + 
+    assert(model.avoidance.phase == S5_WAIT_PATH && scan_count == scans_before && !queued_command);
+    vehicle_submit_obstacle_range(200);
+    work();
+    assert(vehicle_request_start());
+    work();
+    assert(model.avoidance.phase == S5_PROFILE_PATH && scan_count == scans_before + 1 &&
+           !queued_command);
+
+    puts("PASS missing echo does not start a scan, close echo stops before scanning, and bypass preserves STOP");
+    test_imu_restart();
+}

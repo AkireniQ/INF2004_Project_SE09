@@ -138,6 +138,11 @@ static BOOL scan_obstacle(S5_PROFILE *profile, BOOL verbose, const uint32_t *req
     tm_printf((UB*)"%s confirming forward target before GP12 coarse sweep\n", tag);
     unsigned centre = read_at(S5_CENTRE_INDEX, verbose, true, S5_UNKNOWN_RANGE);
     s5_scan_set(&samples, S5_CENTRE_INDEX, centre);
+    if (request && !vehicle_obstacle_scan_current(*request)) return FALSE;
+    if (request && !s5_range_available(centre)) {
+        vehicle_submit_obstacle_range(S5_UNKNOWN_RANGE);
+        return FALSE;
+    }
     if (request && s5_range_available(centre) && centre > limit_mm) {
         vehicle_submit_obstacle_range(centre);
         if(centre==S5_OPEN_RANGE)vehicle_submit_obstacle_range(centre); /* read_at confirmed it */

@@ -69,6 +69,8 @@ Place a flat box about 200 mm ahead. Confirm the forward echo, five coarse beari
 
 ### Track acceptance
 
+Repeat a run on clear tape with no sonar target. An unavailable echo should leave line following active and the servo at 90°. Present a box within 230 mm and verify that the wheels stop and the servo sweeps only if the centered check confirms a close target. If a confirmed close target's echo drops out, the car should hold at rest while checking forward.
+
 Use the MQTT build with a single stationary box, a clear bypass lane, and STOP available. Start on a straight section, with the box ahead and room on one side. Verify that both wheels stop before the sweep, that the car commits only after a scan identifies a usable route, and that the outer IR sensors find the original tape before the dashboard returns to Follow line. Repeat with room on the other side and with both sides blocked before the scan. The firmware uses the measured 130 mm from the outer IR sensors to the axle and their 30 mm left-to-right spacing. Recheck `S5_IR_TO_AXLE_MM` and `S5_OUTER_IR_SPACING_MM` if the sensors are remounted.
 
 Start about 300 mm from a flat box on straight tape. The normal scan starts within 230 mm. With a known 200 mm box centred on the tape, check the USB log for the signed edge offsets and sideways target. With measured edges at ±100 mm, the sideways target is 235 mm. Move the same box left and then right to verify that the two edge offsets and chosen route change. The planner assumes a 160 mm outside chassis width including its tyres and adds a 55 mm gap. Measure the assembled car at its widest point and adjust `S5_CHASSIS_WIDTH_MM` to match.
@@ -81,4 +83,6 @@ The log should show two 60° rolling turns on departure and another two on retur
 
 After both crossings, the car keeps rolling straight to the encoder position for the final arc. If the search reaches its cap first, the car completes the remaining distance in a separate bounded move. The USB log shows both crossing distances and the target used for the final arc. The alignment calculation assumes an 18 mm stripe. After the final arc, verify that the car straddles the tape with both outer sensors over white. The first new forward sonar reading is used before line-follow motion starts again. Verify that STOP and the pickup stop can interrupt the preset route.
 
-After a confirmed two-sensor crossing and the final arc, put one outer sensor on a tape edge and confirm the handoff still succeeds. The normal line follower uses that edge to correct the position as it m
+After a confirmed two-sensor crossing and the final arc, put one outer sensor on a tape edge and confirm the handoff still succeeds. The normal line follower uses that edge to correct the position as it moves.
+
+The controller uses IR freshness during line following, tape search and confirmation, and a reverse along the tape. A delayed IR update during an encoder-only arc or straight pass does not interrupt that move. If IR is unavailable when the car reaches tape search or confirmation, the controller waits at rest for up to one second. Loss of IR during a moving tape search still stops the car.

@@ -88,6 +88,9 @@ void vc_core_step(VC_MODEL *m, const VC_INPUT *in, VC_OUTPUT *out)
     }
 
     if (!vc_core_detouring(m) && in->obstacle_blocked) {
+        /* An echo dropout alone cannot start avoidance. Keep the wheels
+           stopped if a close obstacle was seen and its reading has gone stale. */
+        if (!in->avoidance.range_valid) return;
         s5_avoid_begin(&m->avoidance, in->avoidance.now);
         m->avoidance.reverse_available = in->avoidance.can_retrace;
         m->avoidance.reverse_long = in->avoidance.can_retrace_far;

@@ -57,9 +57,9 @@ static bool range_valid(uint32_t now)
     return pending.obstacle_monitor && s5_range_available(obstacle_range.range_mm) &&
            now - obstacle_range_at <= S5_RANGE_MAX_AGE_MS;
 }
-static bool obstacle_blocked(uint32_t now)
+static bool obstacle_blocked(void)
 {
-    return pending.obstacle_monitor && (pending.follow_blocked || !range_valid(now));
+    return pending.obstacle_monitor && pending.follow_blocked;
 }
 static uint32_t now_ms(void) { SYSTIM t;tk_get_otm(&t);return t.lo; }
 static BOOL lock(void) { return guard>0 && tk_loc_mtx(guard,TMO_FEVR)>=E_OK; }
@@ -152,7 +152,7 @@ static VC_INPUT controller_input(BOOL ready, BOOL linked, unsigned faults, bool 
         .line_valid = data.line_valid,
         .line_age_ms = now - data.line_timestamp_ms,
         .left_rpm = data.left_rpm, .right_rpm = data.right_rpm,
-        .obstacle_blocked = obstacle_blocked(now),
+        .obstacle_blocked = obstacle_blocked(),
         .avoidance = {
             .now = now, .range_at = obstacle_range_at, .range_mm = obstacle_range.range_mm,
             .range_valid = range_valid(now), .profile_at = full_profile_at,
@@ -233,8 +233,8 @@ static void submit_obstacle_reading(unsigned range, S5_ECHO_STATE echo)
     if (accepted) {
         obstacle_range_at = now;
         pending.echo_grace_used = false;
-        /* Unknown range already blocks independently. Preserve the last
-           measured hysteresis decision without treating silence as near. */
+        /* Only a measured range can trigger a close obstacle. An unknown
+           range cannot clear a close obstacle that was already detected. */
         if (s5_range_available(range)) {
             unsigned follow_limit = pending.follow_blocked ? S5_FOLLOW_CLEAR_MM : S5_FOLLOW_STOP_MM;
             pending.follow_blocked = range <= follow_limit;
@@ -334,7 +334,7 @@ BOOL vehicle_get_snapshot(VEHICLE_SNAPSHOT *out)
     out->start_pending=pending.start;out->stop_pending=pending.stop;out->reset_pending=pending.reset;
     S5_PHASE phase = model.avoidance.phase;
     bool executing = s5_avoid_executing(phase);
-    out->obstacle_blocked = !executing && obstacle_blocked(out->timestamp_ms);
+    out->obstacle_blocked = !executing && obstacle_blocked();
     /* Forward samples naturally age out during the initial sweep. */
     bool scanning = phase == S5_PROFILE_PATH && !pending.profile_valid;
     bool echo_fault = phase == S5_FAILED && model.avoidance.failure == S5_FAIL_ECHO;

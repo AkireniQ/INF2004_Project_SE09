@@ -315,6 +315,16 @@ static void test_unsafe_profile_and_scan_timeout(void)
     in.start = false;
     in.obstacle_blocked = true;
     step(&model, &in, &out, 20);
+    VC_MODEL lost_target = model;
+    VC_INPUT unavailable = in;
+    unavailable.avoidance.range_valid = false;
+    unavailable.avoidance.profile_valid = true;
+    unavailable.avoidance.profile_at = unavailable.avoidance.now + 20;
+    unavailable.avoidance.profile.nearest_mm = S5_UNKNOWN_RANGE;
+    step(&lost_target, &unavailable, &out, 20);
+    assert(out.maneuver.action == S5_WAIT && lost_target.avoidance.phase == S5_WAIT_PATH &&
+           lost_target.avoidance.failure == S5_FAIL_ECHO);
+
     step(&model, &in, &out, 14000);
     assert(out.maneuver.action == S5_WAIT && model.avoidance.phase == S5_WAIT_PATH &&
            model.avoidance.failure == S5_FAIL_SCAN_TIMEOUT && model.state == VC_AVOIDING);
