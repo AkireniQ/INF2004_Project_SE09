@@ -19,6 +19,7 @@ _Static_assert(S5_CLEARANCE_BEARING_DEG % S5_FINE_STEP == 0 && BYPASS_SCAN_STEPS
 
 static ID scan_event;
 static unsigned servo_angle = S5_CENTRE_ANGLE;
+typedef enum { SCAN_COARSE, SCAN_FINE, SCAN_CLEARANCE } SCAN_READING;
 static const char *const echo_status[] = {
     [S5_ECHO_QUIET] = "rise timeout",
     [S5_ECHO_PULSE] = "pulse",
@@ -55,28 +56,38 @@ static void log_ping(const char *tag, const char *context, unsigned angle, S5_PI
                   ping.range_mm == S5_OPEN_RANGE ? "open" : "unavailable");
 }
 
-static unsigned read_at(unsigned index, BOOL verbose, bool fine, unsigned edge_reference)
+static unsigned read_at(unsigned index, BOOL verbose, SCAN_READING reading, unsigned edge_reference)
 {
     aim(s5_scan_bearing(index));
     unsigned previous = S5_UNKNOWN_RANGE;
-    const unsigned attempts = fine ? FINE_ATTEMPTS : 3u;
+    const unsigned attempts = reading == SCAN_COARSE ? 3u : FINE_ATTEMPTS;
     bool edge = s5_range_measured(edge_reference);
     unsigned ranges[FINE_ATTEMPTS];
+    S5_PING clearance_pings[FINE_ATTEMPTS];
     for (unsigned attempt = 0; attempt < attempts; ++attempt) {
         if (attempt) tk_dly_tsk(PING_INTERVAL_MS);
         S5_PING ping = s5_hw_ping();
         if (verbose) log_ping("[S5 BENCH]", attempt ? "recheck" : "scan", servo_angle, ping);
-        if (!fine && s5_range_measured(ping.range_mm)) return ping.range_mm;
+        if (reading == SCAN_COARSE && s5_range_measured(ping.range_mm)) return ping.range_mm;
+        if (reading == SCAN_CLEARANCE) clearance_pings[attempt] = ping;
 
         unsigned candidate = ping.range_mm;
         ranges[attempt] = candidate;
         unsigned confirmed = s5_confirm_scan_range(previous, candidate);
-        if (s5_range_available(confirmed) && (!edge || !s5_background_beyond(confirmed, edge_reference)))
-            return confirmed;
-        /* A missed ping can separate two matching measured echoes.
-         * Open space still needs two consecutive results. */
+        if (s5_range_available(confirmed) && (!edge || !s5_background_beyond(confirmed, edge_reference))) {
+            return reading == SCAN_CLEARANCE ? s5_clearance_range(ranges, attempt + 1u) : confirmed;
+        }
+        /* A missed ping can separate two matching measured echoes. */
         if (!s5_range_available(candidate) && s5_range_measured(previous)) continue;
         previous = candidate;
+    }
+    if (reading == SCAN_CLEARANCE) {
+        unsigned range = s5_clearance_range(ranges, attempts);
+        if (!verbose && range == S5_UNKNOWN_RANGE) {
+            for (unsigned i = 0; i < attempts; ++i)
+                log_ping("[S5]", "clearance attempt", servo_angle, clearance_pings[i]);
+        }
+        return range;
     }
     return edge ? s5_edge_background(ranges, attempts, edge_reference) : S5_UNKNOWN_RANGE;
 }
@@ -91,7 +102,7 @@ static unsigned scan_edge(S5_SCAN *samples, unsigned anchor, unsigned reference,
            (verbose || misses < 4u)) {
         if (request && !vehicle_obstacle_scan_current(*request)) break;
         index += step;
-        unsigned range = read_at((unsigned)index, verbose, true, reference);
+        unsigned range = read_at((unsigned)index, verbose, SCAN_FINE, reference);
         s5_scan_set(samples, (unsigned)index, range);
         const char *side = step < 0 ? "left" : "right";
         if (s5_background_beyond(range, reference)) {
@@ -136,7 +147,7 @@ static BOOL scan_obstacle(S5_PROFILE *profile, BOOL verbose, const uint32_t *req
     const char *tag = verbose ? "[S5 BENCH]" : "[S5]";
     S5_SCAN samples = {0};
     tm_printf((UB*)"%s confirming forward target before GP12 coarse sweep\n", tag);
-    unsigned centre = read_at(S5_CENTRE_INDEX, verbose, true, S5_UNKNOWN_RANGE);
+    unsigned centre = read_at(S5_CENTRE_INDEX, verbose, SCAN_FINE, S5_UNKNOWN_RANGE);
     s5_scan_set(&samples, S5_CENTRE_INDEX, centre);
     if (request && !vehicle_obstacle_scan_current(*request)) return FALSE;
     if (request && !s5_range_available(centre)) {
@@ -152,13 +163,13 @@ static BOOL scan_obstacle(S5_PROFILE *profile, BOOL verbose, const uint32_t *req
     for (unsigned i = S5_COARSE_FIRST; i <= S5_COARSE_LAST; i += S5_COARSE_STEP) {
         if (request && !vehicle_obstacle_scan_current(*request)) goto cancelled;
         if (i == S5_CENTRE_INDEX && s5_range_available(centre)) continue;
-        s5_scan_set(&samples, i, read_at(i, verbose, false, S5_UNKNOWN_RANGE));
+        s5_scan_set(&samples, i, read_at(i, verbose, SCAN_COARSE, S5_UNKNOWN_RANGE));
     }
 
     unsigned anchor = s5_scan_target(&samples, limit_mm);
     if (anchor == S5_NO_TARGET) {
         aim(S5_CENTRE_ANGLE);
-        unsigned forward=read_at(S5_CENTRE_INDEX,FALSE,true,S5_UNKNOWN_RANGE);
+        unsigned forward = read_at(S5_CENTRE_INDEX, FALSE, SCAN_FINE, S5_UNKNOWN_RANGE);
         if (!s5_range_available(forward) || forward <= limit_mm) return FALSE;
         if(request) {
             vehicle_submit_obstacle_range(forward);
@@ -173,7 +184,7 @@ static BOOL scan_obstacle(S5_PROFILE *profile, BOOL verbose, const uint32_t *req
     if (verbose)
         tm_printf((UB*)"%s fine scan starting at %u deg\n", tag, s5_scan_bearing(anchor));
     unsigned fine = anchor == S5_CENTRE_INDEX && s5_range_available(centre) ?
-                    centre : read_at(anchor, verbose, true, S5_UNKNOWN_RANGE);
+                    centre : read_at(anchor, verbose, SCAN_FINE, S5_UNKNOWN_RANGE);
     if (!s5_same_obstacle(fine, coarse) || fine > limit_mm) {
         tm_printf((UB*)"%s fine scan could not confirm the %u mm target at %u deg\n",
                   tag, coarse, servo_angle);
@@ -186,9 +197,11 @@ static BOOL scan_obstacle(S5_PROFILE *profile, BOOL verbose, const uint32_t *req
     if (request && !vehicle_obstacle_scan_current(*request)) goto cancelled;
 
     *profile = s5_profile(&samples, first, last, anchor, NULL);
-    profile->left_path_mm = read_at(S5_CENTRE_INDEX - BYPASS_SCAN_STEPS, verbose, true, S5_UNKNOWN_RANGE);
+    profile->left_path_mm = read_at(S5_CENTRE_INDEX - BYPASS_SCAN_STEPS, verbose,
+                                    SCAN_CLEARANCE, S5_UNKNOWN_RANGE);
     if (request && !vehicle_obstacle_scan_current(*request)) goto cancelled;
-    profile->right_path_mm = read_at(S5_CENTRE_INDEX + BYPASS_SCAN_STEPS, verbose, true, S5_UNKNOWN_RANGE);
+    profile->right_path_mm = read_at(S5_CENTRE_INDEX + BYPASS_SCAN_STEPS, verbose,
+                                     SCAN_CLEARANCE, S5_UNKNOWN_RANGE);
     if (request && !vehicle_obstacle_scan_current(*request)) goto cancelled;
     aim(S5_CENTRE_ANGLE);
     if (request) refresh_forward(*request);

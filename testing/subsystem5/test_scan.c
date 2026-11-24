@@ -325,6 +325,23 @@ static void test_track_replay_sees_no_edge_on_either_side(void)
            !profile.left_edge_valid && !profile.right_edge_valid);
 }
 
+static void test_clearance_with_unsteady_background(void)
+{
+    const unsigned varied[] = {910, S5_UNKNOWN_RANGE, 705, 1160, 835};
+    assert(s5_clearance_range(varied, 5) == 705);
+    const unsigned incomplete[] = {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, 800, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE};
+    assert(s5_clearance_range(incomplete, 5) == S5_UNKNOWN_RANGE);
+    const unsigned no_returns[] = {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE};
+    assert(s5_clearance_range(no_returns, 3) == S5_UNKNOWN_RANGE);
+    const unsigned open[] = {S5_OPEN_RANGE, S5_UNKNOWN_RANGE, S5_OPEN_RANGE};
+    assert(s5_clearance_range(open, 3) == S5_OPEN_RANGE);
+    assert(s5_clearance_range(open, 2) == S5_UNKNOWN_RANGE);
+    const unsigned mixed[] = {S5_OPEN_RANGE, S5_UNKNOWN_RANGE, 705};
+    assert(s5_clearance_range(mixed, 3) == 705);
+    const unsigned near[] = {95, S5_OPEN_RANGE, S5_OPEN_RANGE};
+    assert(s5_clearance_range(near, 3) == 95);
+}
+
 int main(void)
 {
     test_centered_box_edge_coordinates();
@@ -340,6 +357,7 @@ int main(void)
     test_narrow_face_at_track_distance();
     test_track_left_limit();
     test_bench_background_returns();
+    test_clearance_with_unsteady_background();
     test_80_mm_bench_target_with_unstable_corner_ranges();
     puts("PASS echo capture, scan packing, partial width estimates, sweep limits and bench background replay");
 }
