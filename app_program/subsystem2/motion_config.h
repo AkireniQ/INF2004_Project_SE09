@@ -15,6 +15,8 @@
 #define RIGHT_MOTOR_INVERT 0
 #define WHEEL_DIAMETER_MM 67u
 #define EFFECTIVE_TRACK_MM 108u
+#define S2_ARC_RADIUS_MM 100u /* Radius at the drive axle midpoint. */
+#define S2_ARC_ANGLE_DEG 60u
 #define LEFT_CPR_X10 6363u
 #define RIGHT_CPR_X10 6330u
 #define MAX_RPM 240u /* Initial observed-speed reference, NOT a proven bound. */

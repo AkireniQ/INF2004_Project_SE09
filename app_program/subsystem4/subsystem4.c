@@ -48,13 +48,16 @@ EXPORT ER subsystem4_init(void)
 EXPORT ER subsystem4_start(void)
 {
 	ER runtime_status = b4_runtime_start();
-	ID tid;
 
 	if (runtime_status < E_OK) {
 		return runtime_status;
 	}
 
-	/* No affinity: the scheduler may run it on either core */
-	tid = app_start_task(monitor_task, S4_PRI_MONITOR, 0, "monitor_task");
+#if APP_TEST
+	/* The mailbox demonstration belongs to the test build. */
+	ID tid = app_start_task(monitor_task, S4_PRI_MONITOR, 0, "monitor_task");
 	return (tid < E_OK) ? tid : E_OK;
+#else
+	return E_OK;
+#endif
 }

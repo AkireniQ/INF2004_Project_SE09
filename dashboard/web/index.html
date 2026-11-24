@@ -28,7 +28,7 @@
           <button id="stop" class="command stop" disabled><span class="button-icon stop-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1"/></svg></span><span class="button-word">STOP</span><span class="button-caption">Request stop</span></button>
         </div>
         <div class="command-feedback" id="command-feedback" aria-live="polite">No command sent from this dashboard.</div>
-        <button id="reset" class="reset-control" disabled>Reset fault</button><p class="metric-note">Reset is available only when stopped on a motor fault. It never starts the car.</p>
+        <button id="reset" class="reset-control" disabled>Reset fault</button><p class="metric-note">Reset a fault once the car has stopped. Place the car back on the tape after a failed detour, then press START separately.</p>
         <div class="control-note"><span class="note-icon">i</span><p>START/STOP go through the vehicle controller. An ACK confirms a submitted request, not physical movement.</p></div>
       </section>
 
@@ -53,6 +53,7 @@
         <div class="mission-value" id="mission-state">—</div>
         <p class="card-description" id="mission-description">Waiting for a mission-state report.</p>
         <div class="fault-list" id="vehicle-faults">Fault status unavailable</div>
+        <p class="metric-note" id="sonar-detail" hidden></p>
         <div class="controller-checks"><strong id="start-blocker">Controller diagnostics unavailable</strong><p id="start-hint">Update the Pico firmware to report why START is blocked.</p><div class="mode-row"><span>IR age <strong id="ir-age">—</strong></span><span>Line stop <strong id="line-stop">—</strong></span></div><p id="controller-detail" class="metric-note">Waiting for live controller diagnostics.</p></div>
       </section>
       <section class="card telemetry-card" id="motion-card">
@@ -71,7 +72,7 @@
         <div class="section-top"><h2>Line sensors &amp; barcode</h2><span class="sample-status" id="line-freshness">No data</span></div>
         <div class="sensor-grid"><div><span class="sensor-light" id="left-ir-light"></span><span>Left IR</span><strong id="left-ir">—</strong></div><div><span class="sensor-light" id="right-ir-light"></span><span>Right IR</span><strong id="right-ir">—</strong></div></div>
         <div class="mode-row"><span>Barcode <strong id="barcode">—</strong></span><span>Centre flag <strong id="centre-ir">—</strong></span></div>
-        <p class="metric-note">Your current firmware uses two tracking sensors. It reports black-detection flags, not raw analogue readings. Barcode decoding is currently disabled.</p>
+        <p class="metric-note">If this card is stale, check IR age in the Vehicle controller card for the Pico’s latest local readings.</p>
       </section>
       <section class="card telemetry-card" id="terrain-card">
         <div class="section-top"><h2>Terrain &amp; hump</h2><span class="sample-status" id="terrain-freshness">No data</span></div>
@@ -81,7 +82,7 @@
       </section>
       <section class="card telemetry-card" id="obstacle-card">
         <div class="section-top"><h2>Obstacle scan</h2><span class="sample-status" id="obstacle-freshness">No data</span></div>
-        <div class="obstacle-grid"><div><span class="field-label">NEAREST</span><strong id="obstacle-nearest">—</strong></div><div><span class="field-label">WIDTH</span><strong id="obstacle-width">—</strong></div><div><span class="field-label">LEFT CLEARANCE</span><strong id="obstacle-left">—</strong></div><div><span class="field-label">RIGHT CLEARANCE</span><strong id="obstacle-right">—</strong></div></div>
+        <div class="obstacle-grid"><div><span class="field-label">NEAREST</span><strong id="obstacle-nearest">—</strong></div><div><span class="field-label">EST. WIDTH</span><strong id="obstacle-width">—</strong></div><div><span class="field-label">LEFT CLEARANCE</span><strong id="obstacle-left">—</strong></div><div><span class="field-label">RIGHT CLEARANCE</span><strong id="obstacle-right">—</strong></div></div>
         <p class="metric-note">Appears when Buddy 5 submits a valid scan. A scan alone does not confirm that obstacle avoidance is running.</p>
       </section>
       <section class="card event-card"><div class="section-top"><h2>Connection &amp; mission events</h2><span class="tiny-label">LATEST 40</span></div><ol id="events" class="events"><li>Waiting for events.</li></ol></section>

@@ -1,6 +1,19 @@
 #include "motion_core.h"
 #include "motion_config.h"
+#include "motion_crawl.h"
 #include "motion_hw.h"
+#include "motion_transport.h"
+#include "../subsystem3/line_steering.h"
+
+#define WHEEL_CIRCUMFERENCE_UM ((uint32_t)((uint64_t)WHEEL_DIAMETER_MM*3141593u/1000u))
+#define MANEUVER_PIVOT_RPM 24u
+#define ARC_DIAMETER_MM (2u * S2_ARC_RADIUS_MM)
+#define ARC_INNER_RPM ((S3_CRUISE_RPM * (ARC_DIAMETER_MM - EFFECTIVE_TRACK_MM) + S2_ARC_RADIUS_MM) / ARC_DIAMETER_MM)
+#define ARC_OUTSIDE_RPM (2u * S3_CRUISE_RPM - ARC_INNER_RPM)
+
+_Static_assert(ARC_DIAMETER_MM > EFFECTIVE_TRACK_MM, "Both wheels must roll forward on a detour arc");
+_Static_assert(S3_CRUISE_RPM <= S2_CRAWL_MAX_RPM && ARC_INNER_RPM > 3u,
+               "Crawl speed must leave room for arc wheel trim");
 
 enum { IDLE, VELOCITY, DISTANCE, TURN };
 enum { FAULT_COUNTS=1, FAULT_TIMING=2, FAULT_STALL=4, FAULT_TIMEOUT=8 };
@@ -16,6 +29,7 @@ static struct {
     unsigned right_rpm:8;
     unsigned left_reverse:1;
     unsigned right_reverse:1;
+    unsigned arc:1;
     unsigned faults:4;
 } state;
 /* Explicit initial bounds: RPM 0..300 (9); errors -300..240 (10 signed);
@@ -34,6 +48,8 @@ static struct wheel_data {
 static uint64_t last_tick, command_start;
 static uint32_t timing_fault_gap_us; /* Diagnostic only; latched until explicit clear. */
 static uint64_t stall_start[2];
+static S2_CRAWL crawl;
+static bool crawling;
 static unsigned cpr(unsigned w) { return w ? RIGHT_CPR_X10 : LEFT_CPR_X10; }
 static int clamp(int v, int lo, int hi) { return v<lo?lo:(v>hi?hi:v); }
 void subsystem2_encoder_gpio_irq(unsigned gpio, uint32_t events)
@@ -59,7 +75,7 @@ static uint16_t drain_encoder(void)
     EI(saved);
     return result;
 }
-static void drive(unsigned w, unsigned percent)
+static void drive_ticks(unsigned w, unsigned ticks)
 {
     unsigned a=w?RIGHT_IN_A:LEFT_IN_A, b=w?RIGHT_IN_B:LEFT_IN_B;
     bool reverse=w?state.right_reverse:state.left_reverse;
@@ -67,8 +83,12 @@ static void drive(unsigned w, unsigned percent)
     /* Clear both before selecting the active input. Zero duty = coast. */
     s2_hw_pwm_write(a,0);
     s2_hw_pwm_write(b,0);
-    if (percent) s2_hw_pwm_write(reverse?b:a, (uint16_t)(percent*10u));
-    wheels[w].duty=percent;
+    if (ticks) s2_hw_pwm_write(reverse?b:a, (uint16_t)ticks);
+    wheels[w].duty=(ticks+5u)/10u;
+}
+static void drive(unsigned w, unsigned percent)
+{
+    drive_ticks(w,percent*10u);
 }
 /* Robo Pico vendor demo uses throttle=0 (both inputs high) for braking.
  * Apply only to a zero-target wheel during forward velocity steering.
@@ -90,6 +110,8 @@ void s2_core_stop(void)
 {
     drive(0,0); drive(1,0);
     state.mode=IDLE;
+    state.arc=false;
+    crawling=false;
     for(unsigned i=0;i<2;i++) {
         wheels[i].integral=0;
         wheels[i].previous_error=0;
@@ -165,7 +187,7 @@ bool s2_core_set_wheel_rpm(unsigned left,unsigned right)
 static unsigned distance_counts(unsigned mm,unsigned w)
 {
     /* circumference in micrometres, pi approximated as 3.141593 */
-    uint32_t circumference_um=(uint32_t)((uint64_t)WHEEL_DIAMETER_MM*3141593u/1000u);
+    uint32_t circumference_um=WHEEL_CIRCUMFERENCE_UM;
     return (unsigned)(((uint64_t)mm*cpr(w)*100u + circumference_um/2)/circumference_um);
 }
 static bool move_mm(unsigned mm,bool reverse)
@@ -176,20 +198,88 @@ static bool move_mm(unsigned mm,bool reverse)
 }
 bool s2_core_move_forward_mm(unsigned mm) { return move_mm(mm,false); }
 bool s2_core_move_backward_mm(unsigned mm) { return move_mm(mm,true); }
+static unsigned turn_counts(unsigned steps,unsigned wheel)
+{
+    uint64_t numerator=(uint64_t)EFFECTIVE_TRACK_MM*steps*45u*cpr(wheel);
+    uint32_t denominator=360u*WHEEL_DIAMETER_MM*10u;
+    return (unsigned)((numerator+denominator/2)/denominator);
+}
 static bool turn(unsigned steps,bool right)
 {
     if(steps<1 || steps>8) return false;
-    unsigned target[2];
-    for(unsigned i=0;i<2;i++) {
-        uint64_t numerator=(uint64_t)EFFECTIVE_TRACK_MM*steps*45u*cpr(i);
-        uint32_t denominator=360u*WHEEL_DIAMETER_MM*10u;
-        target[i]=(unsigned)((numerator+denominator/2)/denominator);
-    }
-    if(!start(TURN,!right,right,target[0],target[1])) return false;
-    return true;
+    return start(TURN,!right,right,turn_counts(steps,0),turn_counts(steps,1));
 }
 bool s2_core_turn_left(unsigned steps) { return turn(steps,false); }
 bool s2_core_turn_right(unsigned steps) { return turn(steps,true); }
+
+bool s2_core_maneuver(unsigned arg)
+{
+    bool accepted;
+    unsigned level=state.level;
+    if(!level)state.level=1;
+    if ((arg & ~1u)==S2_MANEUVER_TURN) {
+        accepted=turn(2,(arg&1u)!=0);
+    } else {
+        bool reverse=arg>S2_MANEUVER_REVERSE_BASE;
+        unsigned mm=reverse?arg-S2_MANEUVER_REVERSE_BASE:arg;
+        accepted=mm && mm<=MAX_DISTANCE_MM && move_mm(mm,reverse);
+    }
+    state.level=level;
+    if(accepted)state.left_rpm=state.right_rpm=state.mode==DISTANCE?S3_CRUISE_RPM:MANEUVER_PIVOT_RPM;
+    return accepted;
+}
+
+static unsigned arc_counts(bool inside,unsigned wheel)
+{
+    /* Wheel revolutions = arc fraction * path diameter / wheel diameter. */
+    unsigned diameter=2u*S2_ARC_RADIUS_MM;
+    unsigned path_diameter=inside?diameter-EFFECTIVE_TRACK_MM:diameter+EFFECTIVE_TRACK_MM;
+    unsigned denominator=360u*WHEEL_DIAMETER_MM*10u;
+    return (path_diameter*cpr(wheel)*S2_ARC_ANGLE_DEG+denominator/2u)/denominator;
+}
+
+bool s2_core_arc(bool right)
+{
+    unsigned level=state.level;
+    if(!level)state.level=1;
+    bool accepted=start(TURN,false,false,arc_counts(!right,0),arc_counts(right,1));
+    state.level=level;
+    if(!accepted)return false;
+    state.arc=true;
+    state.left_rpm=right?ARC_OUTSIDE_RPM:ARC_INNER_RPM;
+    state.right_rpm=right?ARC_INNER_RPM:ARC_OUTSIDE_RPM;
+    return true;
+}
+
+bool s2_core_arc_finished(bool right,const S2_STATUS *status)
+{
+    return s2_get_bits(status,0,2)==IDLE && !s2_get_bits(status,5,4) &&
+           s2_get_bits(status,41,13)>=arc_counts(!right,0) &&
+           s2_get_bits(status,54,13)>=arc_counts(right,1);
+}
+
+bool s2_core_distance_reached(unsigned mm,const S2_STATUS *status)
+{
+    return s2_get_bits(status,41,13)>=distance_counts(mm,0) &&
+           s2_get_bits(status,54,13)>=distance_counts(mm,1);
+}
+
+unsigned s2_core_distance_travelled_mm(const S2_STATUS *status)
+{
+    unsigned left=(unsigned)((uint64_t)s2_get_bits(status,41,13)*WHEEL_CIRCUMFERENCE_UM/(cpr(0)*100u));
+    unsigned right=(unsigned)((uint64_t)s2_get_bits(status,54,13)*WHEEL_CIRCUMFERENCE_UM/(cpr(1)*100u));
+    return left<right?left:right;
+}
+
+bool s2_core_maneuver_finished(unsigned arg,const S2_STATUS *status)
+{
+    if(s2_get_bits(status,0,2)!=IDLE || s2_get_bits(status,5,4))return false;
+    if((arg&~1u)==S2_MANEUVER_TURN)
+        return s2_get_bits(status,41,13)>=turn_counts(2,0) &&
+               s2_get_bits(status,54,13)>=turn_counts(2,1);
+    unsigned mm=arg>S2_MANEUVER_REVERSE_BASE?arg-S2_MANEUVER_REVERSE_BASE:arg;
+    return mm && mm<=MAX_DISTANCE_MM && s2_core_distance_reached(mm,status);
+}
 bool s2_core_busy(void) { return state.mode!=IDLE; }
 unsigned s2_core_faults(void) { return state.faults; }
 bool s2_core_clear_faults(void)
@@ -225,11 +315,35 @@ void s2_core_service(void)
         fail(FAULT_TIMING); return;
     }
     if(moving && state.mode!=VELOCITY && now-command_start>MOVE_TIMEOUT_US) { fail(FAULT_TIMEOUT); return; }
+    bool slow_targets=state.left_rpm<=S2_CRAWL_MAX_RPM && state.right_rpm<=S2_CRAWL_MAX_RPM;
+    bool slow_forward=slow_targets && state.mode==VELOCITY && !state.left_reverse && !state.right_reverse;
+    bool slow_distance=slow_targets && state.mode==DISTANCE;
+    bool low_speed=slow_forward || slow_distance || state.arc;
+    if(low_speed && !crawling) { crawl=(S2_CRAWL){0}; }
+    crawling=low_speed;
+    uint32_t crawl_rpm[2]={0};
+    if(crawling) { s2_crawl_sample(&crawl,(uint16_t)elapsed,sample,crawl_rpm); }
+    bool both_driving=slow_forward || (slow_distance && wheels[0].progress<wheels[0].target &&
+                                      wheels[1].progress<wheels[1].target);
+    bool match_wheels=both_driving && state.left_rpm==state.right_rpm && state.left_rpm!=0u;
+    int arc_trim=0;
+    if(state.arc) {
+        /* Correct the fraction of each wheel's arc completed. This keeps the
+           turn on its radius when one wheel needs more torque to start. */
+        int left=(int)(wheels[0].progress*100u/wheels[0].target);
+        int right=(int)(wheels[1].progress*100u/wheels[1].target);
+        arc_trim=clamp((right-left)/2,-3,3);
+    }
+
     for(unsigned w=0;w<2;w++) {
         unsigned n=(sample>>(w?5:0))&31u;
         unsigned rpm=(unsigned)((uint64_t)n*600000000u/(cpr(w)*elapsed));
         if(rpm>300 && moving) { fail(FAULT_COUNTS); return; }
-        wheels[w].rpm=(3u*wheels[w].rpm+(rpm>300?300:rpm)+2u)/4u;
+        if(crawling) {
+            wheels[w].rpm=(crawl_rpm[w]+S2_RPM_SCALE/2u)/S2_RPM_SCALE;
+        } else {
+            wheels[w].rpm=(3u*wheels[w].rpm+(rpm>300?300:rpm)+2u)/4u;
+        }
         if(!moving) continue;
         if(state.mode==DISTANCE || state.mode==TURN) {
             unsigned p=wheels[w].progress+n;
@@ -238,6 +352,7 @@ void s2_core_service(void)
             if(p>=wheels[w].target) { drive(w,0); continue; }
         }
         unsigned target=w?state.right_rpm:state.left_rpm;
+        if(state.arc)target=(unsigned)((int)target+(w?-arc_trim:arc_trim));
         if(!target) {
             if(state.mode==VELOCITY && (state.left_rpm || state.right_rpm)) {
                 hold_pivot_wheel(w);
@@ -248,11 +363,12 @@ void s2_core_service(void)
         }
         /* Reduce speed near a distance/turn target; coast overshoot still needs calibration. */
         if(state.mode!=VELOCITY && wheels[w].target-wheels[w].progress<80 && target>60) target=60;
-        unsigned duty=pid(w,target);
-        if(n || duty<20) stall_start[w]=now;
+        unsigned ticks=crawling ? s2_crawl_duty(&crawl,w,target,crawl_rpm,match_wheels)
+                                : 10u*pid(w,target);
+        if(n || ticks<200u) stall_start[w]=now;
         if(!stall_start[w]) stall_start[w]=now;
         if(now-stall_start[w]>STALL_US) { fail(FAULT_STALL); return; }
-        drive(w,duty);
+        drive_ticks(w,ticks);
     }
     if(moving && state.mode!=VELOCITY &&
        wheels[0].progress>=wheels[0].target && wheels[1].progress>=wheels[1].target) s2_core_stop();
