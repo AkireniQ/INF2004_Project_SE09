@@ -14,6 +14,10 @@
 #define B4_DEFAULT_GRAVITY_MAX_MG     UINT16_C(1250)
 #define B4_DEFAULT_TILT_ENTER_CDEG    UINT16_C(1200)
 #define B4_DEFAULT_TILT_EXIT_CDEG     UINT16_C(800)
+#define B4_DEFAULT_ROLL_ENTER_CDEG    UINT16_C(300)
+#define B4_DEFAULT_ROLL_EXIT_CDEG     UINT16_C(150)
+#define B4_HUMP_MAX_GAP_MS            UINT32_C(100)
+#define B4_HUMP_MAX_ROLL_CDEG         INT32_C(4500)
 #define B4_DEFAULT_SLOPE_ENTER_CDEG   UINT16_C(300)
 #define B4_DEFAULT_SLOPE_EXIT_CDEG    UINT16_C(200)
 #define B4_DEFAULT_DYNAMIC_ENTER_MG   UINT16_C(120)
@@ -26,6 +30,7 @@
 #define B4_LIFT_LOW_G_MG              UINT16_C(350)
 #define B4_LIFT_TILT_ENTER_CDEG        UINT16_C(6000)
 #define B4_TURN_EVENT_COOLDOWN_MS     UINT32_C(500)
+#define B4_RESTART_MAX_AGE_MS         UINT32_C(100)
 
 static uint64_t b4_processor_sqrt(uint64_t value)
 {
@@ -129,6 +134,8 @@ static uint8_t b4_processor_config_valid(const B4_PROCESSOR_CONFIG *config)
 	    (config->gravity_max_mg < config->gravity_min_mg) ||
 	    (config->tilt_exit_cdeg >= config->tilt_enter_cdeg) ||
 	    (config->slope_exit_cdeg >= config->slope_enter_cdeg) ||
+	    (config->roll_exit_cdeg >= config->roll_enter_cdeg) ||
+	    (config->roll_enter_cdeg > B4_HUMP_MAX_ROLL_CDEG) ||
 	    (config->tilt_enter_cdeg > 18000U) ||
 	    (config->slope_enter_cdeg > 9000U) ||
 	    (config->dynamic_enter_mg == 0U) ||
@@ -138,6 +145,10 @@ static uint8_t b4_processor_config_valid(const B4_PROCESSOR_CONFIG *config)
 	    (config->terrain_transition_samples == 0U) ||
 	    (config->terrain_end_samples <
 	     config->terrain_transition_samples) ||
+	    (config->left_axis >= B4_IMU_AXIS_COUNT) ||
+	    (config->left_axis == config->up_axis) ||
+	    (config->left_axis == config->forward_axis) ||
+	    ((config->left_sign != -1) && (config->left_sign != 1)) ||
 	    (config->forward_axis >= B4_IMU_AXIS_COUNT) ||
 	    (config->up_axis >= B4_IMU_AXIS_COUNT) ||
 	    (config->forward_axis == config->up_axis) ||
@@ -164,6 +175,11 @@ void b4_processor_default_config(B4_PROCESSOR_CONFIG *config)
 		B4_CALIBRATION_DEFAULT_MAX_NORM_MG;
 	config->calibration.max_axis_variance_mg2 =
 		B4_CALIBRATION_DEFAULT_MAX_VAR_MG2;
+	config->effective_lateral_distance_mm = B4_EFFECTIVE_LATERAL_DISTANCE_MM;
+	config->roll_enter_cdeg = B4_DEFAULT_ROLL_ENTER_CDEG;
+	config->roll_exit_cdeg = B4_DEFAULT_ROLL_EXIT_CDEG;
+	config->left_axis = 0U;
+	config->left_sign = 1;
 	config->gravity_min_mg = B4_DEFAULT_GRAVITY_MIN_MG;
 	config->gravity_max_mg = B4_DEFAULT_GRAVITY_MAX_MG;
 	config->tilt_enter_cdeg = B4_DEFAULT_TILT_ENTER_CDEG;
@@ -239,6 +255,17 @@ static int32_t b4_processor_slope_cdeg(const B4_PROCESSOR *processor)
 	return b4_processor_atan2_cdeg(cross, dot);
 }
 
+/* Relative roll in the left/up plane; right wheel rising is positive. */
+static int32_t b4_processor_roll_cdeg(const B4_PROCESSOR *processor)
+{
+	uint8_t l = processor->config.left_axis, u = processor->config.up_axis;
+	int64_t bl = (int64_t)processor->baseline_mg[l] * processor->config.left_sign;
+	int64_t bu = (int64_t)processor->baseline_mg[u] * processor->config.up_sign;
+	int64_t cl = (int64_t)processor->filtered_accel_mg[l] * processor->config.left_sign;
+	int64_t cu = (int64_t)processor->filtered_accel_mg[u] * processor->config.up_sign;
+	return b4_processor_atan2_cdeg(bl * cu - cl * bu, bl * cl + bu * cu);
+}
+
 static int32_t b4_processor_tilt_cdeg(const B4_PROCESSOR *processor,
 				     int32_t slope_cdeg)
 {
@@ -312,73 +339,91 @@ static int32_t b4_processor_height_mm(int64_t height_um)
 	return (int32_t)height_mm;
 }
 
-static void b4_processor_emit_height(B4_PROCESSOR *processor,
-				     uint32_t timestamp_ms,
-				     B4_PROCESSOR_OUTPUT *output)
+void b4_processor_invalidate_hump(B4_PROCESSOR *processor)
 {
-	b4_processor_add_event(output, timestamp_ms,
-			       B4_EVENT_HUMP_PEAK_HEIGHT,
-			       processor->height_valid,
-			       processor->height_valid != 0U
-			       ? b4_processor_height_mm(
-					processor->peak_height_um) : 0);
+	if (processor == NULL) return;
+	processor->hump_candidate_valid = 0U;
+	if (processor->hump_entry_count != 0U)
+		processor->hump_state = B4_HUMP_RIGHT_RISE;
+	processor->hump_entry_count = 0U;
+	processor->hump_armed = 0U;
+}
+
+static void b4_processor_update_hump(B4_PROCESSOR *p, const B4_IMU_SAMPLE *sample,
+	int32_t roll, uint8_t valid, B4_PROCESSOR_OUTPUT *out)
+{
+	uint8_t debounce = p->config.terrain_transition_samples;
+	if (!valid) {
+		b4_processor_invalidate_hump(p);
+		p->hump_flat_count = 0U;
+		return;
+	}
+	if (p->hump_state == B4_HUMP_LEVEL) {
+		if (!p->hump_armed) {
+			if (b4_processor_abs_i32(roll) <= p->config.roll_exit_cdeg) {
+				if (++p->hump_flat_count >= debounce) {
+					p->hump_armed = 1U;
+					p->hump_flat_count = 0U;
+				}
+			} else p->hump_flat_count = 0U;
+			return;
+		}
+		if (roll >= p->config.roll_enter_cdeg) {
+			if (p->hump_entry_count == 0U) {
+				p->hump_candidate_valid = 1U;
+				p->peak_roll_cdeg = roll;
+				p->peak_height_um = 0;
+				p->height_valid = 0U;
+			}
+			if (roll > p->peak_roll_cdeg) p->peak_roll_cdeg = roll;
+			if (++p->hump_entry_count >= debounce) {
+				p->hump_state = B4_HUMP_RIGHT_RISE;
+				if (p->peak_roll_cdeg > B4_HUMP_MAX_ROLL_CDEG)
+					p->hump_candidate_valid = 0U;
+				p->hump_entry_count = 0U;
+			}
+		} else {
+			p->hump_entry_count = 0U;
+		}
+		return;
+	}
+	if (roll > p->peak_roll_cdeg) p->peak_roll_cdeg = roll;
+	if (roll > B4_HUMP_MAX_ROLL_CDEG || roll < -(int32_t)p->config.roll_exit_cdeg)
+		p->hump_candidate_valid = 0U;
+	if (b4_processor_abs_i32(roll) <= p->config.roll_exit_cdeg) {
+		if (++p->hump_flat_count >= debounce) {
+			p->hump_state = B4_HUMP_LEVEL;
+			p->hump_armed = 1U;
+			p->hump_flat_count = 0U;
+			out->hump_detected = 1U;
+			b4_processor_add_event(out, sample->timestamp_ms,
+				B4_EVENT_HUMP_DETECTED, 1U, p->peak_roll_cdeg);
+			p->height_valid = p->hump_candidate_valid &&
+				p->config.effective_lateral_distance_mm != 0U;
+			if (p->height_valid) {
+				p->peak_height_um = (int64_t)p->config.effective_lateral_distance_mm *
+					b4_processor_sin_q1000(p->peak_roll_cdeg);
+				if (!p->max_height_valid || p->peak_height_um > p->max_height_um)
+					p->max_height_um = p->peak_height_um;
+				p->max_height_valid = 1U;
+			}
+			b4_processor_add_event(out, sample->timestamp_ms,
+				B4_EVENT_HUMP_PEAK_HEIGHT, p->height_valid,
+				b4_processor_height_mm(p->peak_height_um));
+		}
+	} else {
+		p->hump_flat_count = 0U;
+	}
 }
 
 static void b4_processor_start_terrain(B4_PROCESSOR *processor,
-				       const B4_IMU_SAMPLE *sample,
-				       int32_t slope_cdeg,
-				       uint8_t speed_valid,
-				       B4_PROCESSOR_OUTPUT *output)
+	const B4_IMU_SAMPLE *sample, int32_t slope_cdeg, B4_PROCESSOR_OUTPUT *output)
 {
 	processor->terrain_state = B4_TERRAIN_ASCENDING;
-	processor->terrain_height_um = 0;
-	processor->peak_height_um = 0;
 	processor->terrain_peak_slope_cdeg = slope_cdeg;
-	processor->height_valid = speed_valid;
 	processor->flat_count = 0U;
 	b4_processor_add_event(output, sample->timestamp_ms,
-			       B4_EVENT_TERRAIN_START, 1U, slope_cdeg);
-}
-
-static void b4_processor_integrate_height(B4_PROCESSOR *processor,
-					  const B4_IMU_SAMPLE *sample,
-					  int32_t slope_cdeg,
-					  uint8_t speed_valid,
-					  int32_t speed_mm_s)
-{
-	uint32_t elapsed_ms;
-	int64_t delta_um;
-
-	if (processor->terrain_state == B4_TERRAIN_FLAT) {
-		return;
-	}
-	if (speed_valid == 0U) {
-		processor->height_valid = 0U;
-		return;
-	}
-
-	elapsed_ms = sample->timestamp_ms - processor->last_timestamp_ms;
-	if ((elapsed_ms == 0U) || (elapsed_ms > 1000U)) {
-		processor->height_valid = 0U;
-		return;
-	}
-	delta_um = ((int64_t)speed_mm_s *
-		    b4_processor_sin_q1000(slope_cdeg) *
-		    elapsed_ms) / INT64_C(1000);
-	if (((delta_um > 0) &&
-	     (processor->terrain_height_um > INT64_MAX - delta_um)) ||
-	    ((delta_um < 0) &&
-	     (processor->terrain_height_um < INT64_MIN - delta_um))) {
-		processor->height_valid = 0U;
-		return;
-	}
-	processor->terrain_height_um += delta_um;
-	if (processor->terrain_height_um > processor->peak_height_um) {
-		processor->peak_height_um = processor->terrain_height_um;
-	}
-	if (processor->peak_height_um > processor->max_height_um) {
-		processor->max_height_um = processor->peak_height_um;
-	}
+		B4_EVENT_TERRAIN_START, 1U, slope_cdeg);
 }
 
 static void b4_processor_update_terrain(B4_PROCESSOR *processor,
@@ -389,6 +434,8 @@ static void b4_processor_update_terrain(B4_PROCESSOR *processor,
 					int32_t speed_mm_s,
 					B4_PROCESSOR_OUTPUT *output)
 {
+	(void)speed_valid;
+	(void)speed_mm_s;
 	int32_t abs_slope = b4_processor_abs_i32(slope_cdeg);
 	uint8_t debounce = processor->config.terrain_transition_samples;
 
@@ -407,16 +454,12 @@ static void b4_processor_update_terrain(B4_PROCESSOR *processor,
 			processor->slope_count = 0U;
 		}
 		if (processor->slope_count >= debounce) {
-			b4_processor_start_terrain(processor, sample,
-						   slope_cdeg, speed_valid,
-						   output);
+			b4_processor_start_terrain(processor, sample, slope_cdeg, output);
 			processor->slope_count = 0U;
 		}
 		return;
 	}
 
-	b4_processor_integrate_height(processor, sample, slope_cdeg,
-				      speed_valid, speed_mm_s);
 	if ((processor->terrain_state == B4_TERRAIN_ASCENDING) &&
 	    (slope_cdeg > processor->terrain_peak_slope_cdeg)) {
 		processor->terrain_peak_slope_cdeg = slope_cdeg;
@@ -430,13 +473,6 @@ static void b4_processor_update_terrain(B4_PROCESSOR *processor,
 		if (processor->slope_count >= debounce) {
 			processor->terrain_state = B4_TERRAIN_DESCENDING;
 			processor->slope_count = 0U;
-			output->hump_detected = 1U;
-			b4_processor_add_event(output, sample->timestamp_ms,
-					       B4_EVENT_HUMP_DETECTED, 1U,
-					       slope_cdeg);
-			b4_processor_emit_height(processor,
-						 sample->timestamp_ms,
-						 output);
 		}
 	} else {
 		processor->slope_count = 0U;
@@ -459,7 +495,6 @@ static void b4_processor_update_terrain(B4_PROCESSOR *processor,
 					processor->terrain_peak_slope_cdeg);
 			}
 			processor->terrain_state = B4_TERRAIN_FLAT;
-			processor->height_valid = 0U;
 			processor->flat_count = 0U;
 			processor->slope_count = 0U;
 			b4_processor_add_event(output, sample->timestamp_ms,
@@ -516,6 +551,14 @@ static uint8_t b4_processor_update_safety(B4_PROCESSOR *processor,
 		 (b4_processor_abs_i32(tilt_cdeg) >=
 		  B4_LIFT_TILT_ENTER_CDEG)) ? 1U : 0U;
 
+	/* Unknown gravity is not evidence that a stopped vehicle is safe to restart. */
+	if (low_g || large_tilt || !gravity_valid ||
+	    sample->timestamp_ms - processor->last_timestamp_ms > B4_RESTART_MAX_AGE_MS) {
+		processor->safety_clear_count = 0U;
+	} else if (processor->safety_clear_count < processor->config.transition_samples) {
+		processor->safety_clear_count++;
+	}
+
 	if ((low_g != 0U) || (large_tilt != 0U)) {
 		if (processor->lift_overturn_count <
 		    processor->config.transition_samples) {
@@ -539,6 +582,22 @@ static uint8_t b4_processor_update_safety(B4_PROCESSOR *processor,
 	}
 
 	return (low_g != 0U || large_tilt != 0U) ? 1U : 0U;
+}
+
+uint8_t b4_processor_restart_ready(const B4_PROCESSOR *processor, uint32_t now_ms)
+{
+	return processor != NULL && processor->initialized &&
+		processor->calibrator.ready &&
+		processor->safety_clear_count >= processor->config.transition_samples &&
+		(uint32_t)(now_ms - processor->last_timestamp_ms) <= B4_RESTART_MAX_AGE_MS;
+}
+
+uint8_t b4_processor_rearm(B4_PROCESSOR *processor, uint32_t now_ms)
+{
+	if (!b4_processor_restart_ready(processor, now_ms)) return 0U;
+	processor->stop_latched = 0U;
+	processor->lift_overturn_count = 0U;
+	return 1U;
 }
 
 static void b4_processor_update_turn(B4_PROCESSOR *processor,
@@ -637,14 +696,18 @@ B4_CALIBRATION_STATUS b4_processor_update(
 	uint16_t raw_accel_norm = 0U;
 	int32_t slope_cdeg = 0;
 	int32_t tilt_cdeg = 0;
+	int32_t roll_cdeg = 0;
 	uint8_t safety_candidate = 0U;
 
 	if ((processor == NULL) || (sample == NULL) || (output == NULL) ||
 	    (processor->initialized == 0U) ||
 	    (b4_imu_sample_is_valid(sample) == 0U) ||
 	    (speed_valid > 1U)) {
+		if (processor != NULL && processor->initialized)
+			b4_processor_invalidate_hump(processor);
 		return B4_CALIBRATION_INVALID_ARGUMENT;
 	}
+	(void)speed_mm_s;
 	(void)memset(output, 0, sizeof(*output));
 	accel_valid =
 		((sample->flags & B4_IMU_SAMPLE_FLAG_ACCEL_VALID) != 0U)
@@ -709,6 +772,7 @@ B4_CALIBRATION_STATUS b4_processor_update(
 				(accel_norm <= processor->config.gravity_max_mg);
 		}
 		slope_cdeg = b4_processor_slope_cdeg(processor);
+		roll_cdeg = b4_processor_roll_cdeg(processor);
 		tilt_cdeg = b4_processor_tilt_cdeg(processor, slope_cdeg);
 		safety_candidate = b4_processor_update_safety(
 			processor, sample, raw_accel_norm, gravity_valid,
@@ -751,6 +815,21 @@ B4_CALIBRATION_STATUS b4_processor_update(
 			processor->tilt_release_count = 0U;
 		}
 
+        {
+            uint32_t elapsed = sample->timestamp_ms - processor->last_timestamp_ms;
+            int32_t l = processor->filtered_accel_mg[processor->config.left_axis];
+            int32_t u = processor->filtered_accel_mg[processor->config.up_axis];
+            int32_t bl = processor->baseline_mg[processor->config.left_axis];
+            int32_t bu = processor->baseline_mg[processor->config.up_axis];
+            uint8_t roll_valid = gravity_valid && raw_accel_norm >= processor->config.gravity_min_mg &&
+                raw_accel_norm <= processor->config.gravity_max_mg && safety_candidate == 0U &&
+                (int64_t)l*l + (int64_t)u*u >= 90000 &&
+                (int64_t)bl*bl + (int64_t)bu*bu >= 90000 &&
+                elapsed > 0U && elapsed <= B4_HUMP_MAX_GAP_MS &&
+                !(sample->flags & B4_IMU_SAMPLE_FLAG_ACCEL_OVERRUN);
+            output->roll_valid = roll_valid;
+            b4_processor_update_hump(processor, sample, roll_cdeg, roll_valid, output);
+        }
 		if (safety_candidate == 0U) {
 			b4_processor_update_terrain(processor, sample, slope_cdeg,
 						    gravity_valid, speed_valid,
@@ -770,12 +849,15 @@ B4_CALIBRATION_STATUS b4_processor_update(
 	output->tilt_active = processor->tilt_active;
 	output->terrain_state = processor->terrain_state;
 	output->height_valid = processor->height_valid;
+	output->max_height_valid = processor->max_height_valid;
+	output->hump_state = processor->hump_state;
 	output->peak_height_mm =
 		b4_processor_height_mm(processor->peak_height_um);
 	output->max_height_mm =
 		b4_processor_height_mm(processor->max_height_um);
 	output->tilt_cdeg = (int16_t)tilt_cdeg;
 	output->slope_cdeg = (int16_t)slope_cdeg;
+	output->roll_cdeg = (int16_t)roll_cdeg;
 	output->dynamic_accel_mg = processor->dynamic_accel_mg;
 	output->motion_class = processor->motion_class;
 	if (processor->stop_latched != 0U) {
