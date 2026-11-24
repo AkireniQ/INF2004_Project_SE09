@@ -1,12 +1,19 @@
 /* barcode.c: Code 39 scanner + decoder for the centre sensor.
-   Feed it one darkness sample (0..1000) per tick. */
+   Feed it ONE BIT per tick (1 = bar/black, 0 = space/white), from the AO
+   path (darkness + hysteresis) or straight from the module's DO pin.
+   Decodes * X * for X in A..Z, scanned in either direction.
+
+   Data representation (Change Requirement 1): all scanner state lives in
+   one packed 32-bit word plus 29 one-byte element widths. */
 #include "subsystem3.h"
 
-#define BC_TH_HIGH    600    /* darkness above this = bar   */
-#define BC_TH_LOW     400    /* below this = space (hysteresis) */
-#define BC_GLITCH       2    /* runs shorter than this are noise */
-#define BC_MAX_RUN    100    /* longer than this cannot be part of a barcode */
+#define BC_GLITCH       2    /* runs shorter than this are noise (merged into the neighbour) */
+#define BC_MAX_RUN    100    /* longer than this cannot be part of a barcode (ticks) */
 #define BC_BUSY_TICKS  60    /* "scanning in progress" for this long after the last edge */
+#define BC_RUN_MAX    127    /* 7-bit saturation, > BC_MAX_RUN so the reset test still fires */
+#if BC_MAX_RUN > 255
+#error "element widths are stored in UB"
+#endif
 
 typedef struct { char ch; const char *pat; } C39;   /* w = wide, n = narrow, bar/space alternating */
 LOCAL const C39 c39[] = {
@@ -24,7 +31,7 @@ LOCAL unsigned run, nwin, idle;
 LOCAL INT win[BC_ELEMENTS];
 LOCAL char pending;
 
-LOCAL char decode_char(const INT *w)            /* w[0..8]: bar, space, bar, ... */
+LOCAL char decode_char(const UB *w)             /* w[0..8]: bar, space, bar, ... */
 {
     BOOL wide[9];
     INT i, k, best, wb = 32767, nb = 0, ws, ns = 0;
@@ -63,7 +70,7 @@ LOCAL char decode_char(const INT *w)            /* w[0..8]: bar, space, bar, ...
 }
 
 /* 29 elements = * (9) gap (1) X (9) gap (1) * (9) */
-LOCAL char decode29(const INT *e)
+LOCAL char decode29(const UB *e)
 {
     char m;
     if (decode_char(e) != '*' || decode_char(e + 20) != '*') { return 0; }
@@ -71,9 +78,10 @@ LOCAL char decode29(const INT *e)
     return (m == '*') ? 0 : m;
 }
 
-LOCAL char decode_any(const INT *e)
+LOCAL char decode_any(const UB *e)
 {
-    INT rev[BC_ELEMENTS], i;
+    UB rev[BC_ELEMENTS];
+    INT i;
     char c = decode29(e);
     if (c != 0) { return c; }
     for (i = 0; i < BC_ELEMENTS; i++) { rev[i] = e[BC_ELEMENTS - 1 - i]; }   /* scanned backwards */
@@ -82,15 +90,35 @@ LOCAL char decode_any(const INT *e)
 
 EXPORT void barcode_reset(void)
 {
-    in_bar = FALSE; run = 0; nwin = 0; pending = 0; idle = 10000;
+    bc.in_bar = 0; bc.run = 0; bc.nwin = 0; bc.pending = 0; bc.idle = BC_RUN_MAX;
 }
-EXPORT BOOL barcode_busy(void) { return (nwin >= 3 && idle < BC_BUSY_TICKS); }
-EXPORT char barcode_take(void) { char c = pending; pending = 0; return c; }
-
-EXPORT void barcode_feed(INT dark)
+EXPORT BOOL barcode_busy(void) { return (bc.nwin >= 3 && bc.idle < BC_BUSY_TICKS); }
+EXPORT char barcode_take(void)
 {
-    BOOL bar = in_bar, was_bar;
-    INT  i;
+    UW p = bc.pending;
+    bc.pending = 0;
+    return p ? (char)('A' + p - 1) : 0;
+}
+
+EXPORT void barcode_diag(void)
+{
+    INT i;
+    if (diag.fail_pending) {
+        diag.fail_pending = 0;
+        tm_printf((UB*)"[S3] bc: 29 elements, no match:");
+        for (i = 0; i < BC_ELEMENTS; i++) { tm_printf((UB*)" %d", (INT)diag_fail[i]); }
+        tm_printf((UB*)"\n");
+    }
+    if (diag.resets || bc.glitches) {
+        tm_printf((UB*)"[S3] bc: %d window reset(s), last after %d elements (run=%d), %d glitches merged\n",
+                  (INT)diag.resets, (INT)diag.reset_n, (INT)diag.reset_run, (INT)bc.glitches);
+        diag.resets = 0; bc.glitches = 0;
+    }
+}
+
+EXPORT void barcode_feed(BOOL bar)
+{
+    INT  i, run;
     char c;
 
     if (idle < 10000) { idle++; }
@@ -106,17 +134,17 @@ EXPORT void barcode_feed(INT dark)
     if (run > BC_MAX_RUN || run < BC_GLITCH) {
         nwin = 0;
     } else {
-        if (nwin == BC_ELEMENTS) {              /* slide the window by one */
+        if (bc.nwin == BC_ELEMENTS) {           /* slide the window by one */
             for (i = 1; i < BC_ELEMENTS; i++) { win[i - 1] = win[i]; }
-            nwin--;
+            bc.nwin--;
         }
-        win[nwin++] = run;
-        idle = 0;
-        if (was_bar && nwin == BC_ELEMENTS) {   /* 29 ending in a bar = starts with a bar */
+        win[bc.nwin++] = (UB)run;
+        bc.idle = 0;
+        if (bc.in_bar && bc.nwin == BC_ELEMENTS) {   /* 29 ending in a bar = starts with a bar */
             c = decode_any(win);
             if (c != 0) { pending = c; nwin = 0; }
         }
     }
-    in_bar = bar;
-    run = 1;
+    bc.in_bar = bar;
+    bc.run = 1;
 }

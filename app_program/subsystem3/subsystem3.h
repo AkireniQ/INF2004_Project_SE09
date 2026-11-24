@@ -25,9 +25,11 @@
 #define BC_ELEMENTS       29
 
 IMPORT void barcode_reset(void);
-IMPORT void barcode_feed(INT dark);
-IMPORT char barcode_take(void);
+IMPORT void barcode_feed(BOOL bar);
+IMPORT char barcode_take(void);         /* 'A'..'Z' or 0 */
 IMPORT BOOL barcode_busy(void);
+IMPORT void barcode_diag(void);         /* prints deferred scanner diagnostics; call at low rate */
+IMPORT BOOL ir_read_do(INT gpio);       /* raw digital input of one GPIO (DO path) */
 IMPORT BOOL s3_motion_move_mm(INT mm);
 IMPORT BOOL s3_motion_turn(INT dir, INT steps);   /* dir < 0 = left, > 0 = right */
 
