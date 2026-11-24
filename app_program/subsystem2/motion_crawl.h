@@ -14,6 +14,7 @@ typedef struct {
     uint16_t pulses[S2_CRAWL_WINDOW];
     uint16_t total_pulses[2];
     int32_t integral[2];
+    uint8_t assist_ticks[2];
     uint8_t next;
 } S2_CRAWL;
 
@@ -23,6 +24,6 @@ void s2_crawl_sample(S2_CRAWL *crawl, uint16_t elapsed_us, uint16_t sample,
 
 /* Returns PWM compare counts on the existing 0..1000 scale. */
 unsigned s2_crawl_duty(S2_CRAWL *crawl, unsigned wheel, unsigned target,
-                       const uint32_t rpm[2], bool match_wheels);
+                       const uint32_t rpm[2], bool match_wheels, bool allow_assist);
 
 #endif

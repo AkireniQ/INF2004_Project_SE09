@@ -10,6 +10,7 @@
 #define ARC_DIAMETER_MM (2u * S2_ARC_RADIUS_MM)
 #define ARC_INNER_RPM ((S3_CRUISE_RPM * (ARC_DIAMETER_MM - EFFECTIVE_TRACK_MM) + S2_ARC_RADIUS_MM) / ARC_DIAMETER_MM)
 #define ARC_OUTSIDE_RPM (2u * S3_CRUISE_RPM - ARC_INNER_RPM)
+#define CRAWL_ASSIST_MIN_RPM 6u
 
 _Static_assert(ARC_DIAMETER_MM > EFFECTIVE_TRACK_MM, "Both wheels must roll forward on a detour arc");
 _Static_assert(S3_CRUISE_RPM <= S2_CRAWL_MAX_RPM && ARC_INNER_RPM > 3u,
@@ -317,6 +318,8 @@ void s2_core_service(void)
     if(moving && state.mode!=VELOCITY && now-command_start>MOVE_TIMEOUT_US) { fail(FAULT_TIMEOUT); return; }
     bool slow_targets=state.left_rpm<=S2_CRAWL_MAX_RPM && state.right_rpm<=S2_CRAWL_MAX_RPM;
     bool slow_forward=slow_targets && state.mode==VELOCITY && !state.left_reverse && !state.right_reverse;
+    bool allow_assist = slow_forward && state.left_rpm >= CRAWL_ASSIST_MIN_RPM &&
+                        state.right_rpm >= CRAWL_ASSIST_MIN_RPM;
     bool slow_distance=slow_targets && state.mode==DISTANCE;
     bool low_speed=slow_forward || slow_distance || state.arc;
     if(low_speed && !crawling) { crawl=(S2_CRAWL){0}; }
@@ -358,12 +361,13 @@ void s2_core_service(void)
                 hold_pivot_wheel(w);
             } else { drive(w,0); }
             wheels[w].integral=0; wheels[w].previous_error=0;
+            crawl.assist_ticks[w] = 0;
             stall_start[w]=0;
             continue;
         }
         /* Reduce speed near a distance/turn target; coast overshoot still needs calibration. */
         if(state.mode!=VELOCITY && wheels[w].target-wheels[w].progress<80 && target>60) target=60;
-        unsigned ticks=crawling ? s2_crawl_duty(&crawl,w,target,crawl_rpm,match_wheels)
+        unsigned ticks=crawling ? s2_crawl_duty(&crawl, w, target, crawl_rpm, match_wheels, allow_assist)
                                 : 10u*pid(w,target);
         if(n || ticks<200u) stall_start[w]=now;
         if(!stall_start[w]) stall_start[w]=now;
