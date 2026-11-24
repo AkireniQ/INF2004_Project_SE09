@@ -31,7 +31,7 @@ int s1_command_decode(const unsigned char *data, unsigned length, unsigned *opco
 
 int s1_wire_line(unsigned char out[1], unsigned ir, unsigned barcode)
 {
-    if (out == 0 || ir > 7u || barcode > 4u) { return 0; }
+    if (out == 0 || ir > 7u || barcode > 26u) { return 0; }
     out[0] = (unsigned char)(ir | (barcode << 3u));
     return 1;
 }

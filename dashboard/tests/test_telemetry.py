@@ -30,6 +30,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(self.d.snapshot()['telemetry']['vehicle']['data']['state'],'FAULT')
     def test_all_wire_payloads(self):
         self.assertEqual(decode_telemetry('line',bytes([5|(2<<3)]))['barcode'],'B')
+        self.assertEqual(decode_telemetry('line',bytes([5|(6<<3)]))['barcode'],'F')
+        self.assertEqual(decode_telemetry('line',bytes([5|(26<<3)]))['barcode'],'Z')
         self.assertEqual(decode_telemetry('terrain', (125 | (2 << 11)).to_bytes(2, 'little')),
                          dict(height_mm=125, max_height_mm=None, phase=2, phase_label='Descending'))
         obstacle=(500|(80<<12)|(200<<23)|(300<<35)).to_bytes(6,'little')
@@ -71,7 +73,7 @@ class TelemetryTests(unittest.TestCase):
         self.send('motion',motion_packet())
         self.assertTrue(self.d.snapshot()['telemetry']['motion']['fresh'])
     def test_padding_and_range_rejection(self):
-        packets=[('vehicle',b'\x07'),('line',b'\xc0'),('line',b'\x28'),
+        packets=[('vehicle',b'\x07'),('line',bytes([27 << 3])),('line',b'\xff'),
                  ('terrain',(2001).to_bytes(2,'little')),('terrain',b'\x00\xc0'),
                  ('terrain',(22 | (21 << 13)).to_bytes(3,'little')),
                  ('terrain',(2001 << 13).to_bytes(3,'little')),

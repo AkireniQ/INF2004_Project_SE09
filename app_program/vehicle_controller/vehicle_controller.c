@@ -25,6 +25,7 @@
 #define S5_LINE_DARK 420
 #define S5_CENTER_TAPE_DARK 250
 #define S5_WIDE_MARKING 750
+#define VC_JUNCTION_CONFIRM_SAMPLES 3u
 #define VC_WAKE 1u
 
 enum { SCAN_OFF, SCAN_READY, SCAN_ACTIVE };
@@ -35,6 +36,7 @@ static struct {
     unsigned start:1, stop:1, line_stop:1, auto_start:1, reset:1;
     unsigned obstacle_monitor:1, profile_valid:1, scan:2, follow_blocked:1;
     unsigned last_echo:3, echo_grace_used:1;
+    unsigned barcode_armed:2, barcode_turn:2, junction_samples:2;
 } pending;
 static uint32_t reset_started, reset_refreshed;
 static S5_RANGE_GATE obstacle_range;
@@ -87,14 +89,42 @@ ER vehicle_init(void)
     __atomic_store_n(&work_event, id, __ATOMIC_RELEASE);
     return E_OK;
 }
-void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned barcode)
+static VC_NAV barcode_nav(unsigned decoded)
+{
+    /* Match the team's Subsystem 3 mapping. D crosses under normal tracking. */
+    switch ('A' + decoded - 1u) {
+    case 'A': return VC_NAV_LEFT;
+    case 'F': return VC_NAV_RIGHT;
+    case 'C': return VC_NAV_UTURN;
+    default: return VC_NAV_NONE;
+    }
+}
+
+void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned decoded)
 {
     if(l<0||l>1000||c<0||c>1000||r<0||r>1000||left<0||left>126||right<0||right>126||
-       (left&1)||(right&1)||barcode>4){vehicle_invalidate_line();return;}
+       (left&1)||(right&1)||decoded>26){vehicle_invalidate_line();return;}
     if(!lock())return;
     uint32_t now=now_ms();
     data.l=l;data.c=c;data.r=r;data.left_rpm=left;data.right_rpm=right;
-    data.barcode=barcode;data.line_stop=stop;data.line_valid=TRUE;data.line_timestamp_ms=now;
+    data.line_stop=stop;data.line_valid=TRUE;data.line_timestamp_ms=now;
+    if (model.state == VC_FOLLOW_LINE && !pending.stop) {
+        if (decoded) {
+            data.barcode = decoded;
+            pending.barcode_armed = barcode_nav(decoded);
+        }
+        if (l < S5_WIDE_MARKING || r < S5_WIDE_MARKING) {
+            pending.junction_samples = 0;
+        } else {
+            if (pending.junction_samples < VC_JUNCTION_CONFIRM_SAMPLES) {
+                ++pending.junction_samples;
+            }
+            if (pending.junction_samples == VC_JUNCTION_CONFIRM_SAMPLES && pending.barcode_armed) {
+                pending.barcode_turn = pending.barcode_armed;
+                pending.barcode_armed = VC_NAV_NONE;
+            }
+        }
+    }
     /* A stop recommendation must survive a newer non-stop sensor sample. */
     if (stop && (model.state == VC_FOLLOW_LINE || pending.start)) pending.line_stop = true;
     unlock();
@@ -104,6 +134,7 @@ void vehicle_invalidate_line(void)
 {
     if (!lock()) return;
     data.line_valid = FALSE;
+    pending.junction_samples = 0;
     unlock();
     vehicle_notify_feedback();
 }
@@ -153,6 +184,7 @@ static VC_INPUT controller_input(BOOL ready, BOOL linked, unsigned faults, bool 
         .line_valid = data.line_valid,
         .line_age_ms = now - data.line_timestamp_ms,
         .left_rpm = data.left_rpm, .right_rpm = data.right_rpm,
+        .barcode_turn = pending.barcode_turn,
         .obstacle_blocked = obstacle_blocked(),
         .avoidance = {
             .now = now, .range_at = obstacle_range_at, .range_mm = obstacle_range.range_mm,
@@ -389,27 +421,32 @@ static S5_MOTION drive_feedback(const S2_STATUS *status, const S2_REPLY *reply,
     if (busy) return S5_MOTION_PENDING;
     if ((drive.command & 15u) == S2_ARC)
         return s2_core_arc_finished((drive.command >> 4) != 0, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
+    if ((drive.command & 15u) == S2_CRAWL_PIVOT)
+        return s2_core_pivot_reached(drive.command >> 5, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
     return s2_core_maneuver_finished(drive.command >> 4, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
 }
 
 static void submit_output(const VC_INPUT *in, const VC_OUTPUT *out, const S2_REPLY *reply,
-                          bool detour)
+                          bool bounded)
 {
-    if (out->stop || (!detour && !out->left_rpm && !out->right_rpm)) {
+    if (out->stop || (!bounded && !out->left_rpm && !out->right_rpm)) {
         if (!in->stop && (drive.moving || out->maneuver.action == S5_STOP)) motion_stop();
         drive = (__typeof__(drive)){0};
         return;
     }
 
     bool submitted;
-    if (detour) {
+    if (bounded) {
         if (in->avoidance.motion == S5_MOTION_DONE) {
             drive.command = 0;
             drive.moving = false;
         }
         S5_ACTION action = out->maneuver.action;
-        if (action == S5_WAIT || action == S5_RESCAN) return;
-        if (action == S5_REVERSE)
+        if (out->pivot_degrees)
+            submitted = motion_crawl_pivot(out->pivot_degrees, out->pivot_right, &drive.command);
+        else if (action == S5_WAIT || action == S5_RESCAN)
+            return;
+        else if (action == S5_REVERSE)
             submitted = motion_maneuver_reverse(out->maneuver.distance_mm, &drive.command);
         else if (action == S5_ADVANCE)
             submitted = motion_maneuver(out->maneuver.distance_mm, false, &drive.command);
@@ -464,6 +501,13 @@ static TMO vehicle_service_once(void)
     VC_OUTPUT out;
     in.avoidance.motion = drive_feedback(&status, &reply, busy, now);
     in.drive_failed = drive.failed;
+    if (model.state == VC_TURNING &&
+        (in.avoidance.motion == S5_MOTION_PENDING || in.avoidance.motion == S5_MOTION_DONE) &&
+        (drive.command & 15u) == S2_CRAWL_PIVOT) {
+        unsigned min_degrees = model.junction.phase == VC_JUNCTION_SWEEP ? 3u :
+                               (model.junction.uturn ? 180u : 90u) - VC_JUNCTION_SEARCH_DEG;
+        in.pivot_in_window = s2_core_pivot_reached(min_degrees, &status);
+    }
     unsigned left_measured = s2_get_bits(&status, 9, 9);
     unsigned right_measured = s2_get_bits(&status, 18, 9);
     in.avoidance.stopped = ready && !busy && left_measured <= 2 && right_measured <= 2;
@@ -512,9 +556,15 @@ static TMO vehicle_service_once(void)
     if (pending.start && blocker != VC_START_READY) data.last_start_reject = blocker;
     pending.start = pending.stop = pending.line_stop = false;
     unsigned previous_reason = model.reason;
+    unsigned previous_state = model.state;
+    unsigned previous_junction = model.junction.phase;
     S5_PHASE previous = model.avoidance.phase;
     bool was_executing = s5_avoid_executing(previous);
     vc_core_step(&model, &in, &out);
+    if (model.state != VC_FOLLOW_LINE) {
+        pending.barcode_armed = pending.barcode_turn = VC_NAV_NONE;
+        pending.junction_samples = 0;
+    }
     bool reset_done = false;
     if (in.reset) {
         if (in.avoidance.stopped && !in.motor_faults) {
@@ -558,7 +608,7 @@ static TMO vehicle_service_once(void)
     }
     /* Serialize dispatch with the request latch, so STOP can cancel an entire
        batch before any later movement is submitted. */
-    submit_output(&in, &out, &reply, vc_core_detouring(&model));
+    submit_output(&in, &out, &reply, vc_core_detouring(&model) || model.state == VC_TURNING);
     if (phase != previous || out.maneuver.action == S5_RESCAN) {
         pending.scan = SCAN_OFF;
         if (phase == S5_PROFILE_PATH) pending.profile_valid = false;
@@ -575,6 +625,8 @@ static TMO vehicle_service_once(void)
     }
     data.state = model.state;
     unsigned reason = data.reason = model.reason;
+    unsigned state = model.state;
+    unsigned junction = model.junction.phase;
     unsigned failure = model.avoidance.failure;
     unsigned last_echo = pending.last_echo;
     data.motor_faults = in.motor_faults;
@@ -595,6 +647,17 @@ static TMO vehicle_service_once(void)
 
     if (scan || (was_executing && !executing)) subsystem5_wake();
     if (dispatch_failed) vehicle_notify_feedback();
+    if (previous_state != VC_TURNING && state == VC_TURNING)
+        tm_printf((UB*)"[S3] junction confirmed: advancing to the axle before turning\n");
+    if (!dispatch_failed && out.pivot_degrees)
+        tm_printf((UB*)"[S3] junction %s, up to %u deg %s\n",
+                  junction == VC_JUNCTION_SWEEP ? "rescan" : "turn",
+                  out.pivot_degrees, out.pivot_right ? "right" : "left");
+    if (state == VC_TURNING && junction == VC_JUNCTION_SETTLE && previous_junction != junction)
+        tm_printf((UB*)"[S3] branch tape confirmed, settling before line following\n");
+    if (previous_state == VC_TURNING && state == VC_FAULT)
+        tm_printf((UB*)"[S3] junction stopped: phase=%u reason=%u motor faults=%u\n",
+                  previous_junction, reason, in.motor_faults);
     if (reason == VC_REASON_STALE_LINE && previous_reason != VC_REASON_STALE_LINE) {
         tm_printf((UB*)"[VC] stopped: local IR sample %s, last update %u ms ago\n",
                   in.line_valid ? "expired" : "invalid", (unsigned)in.line_age_ms);
