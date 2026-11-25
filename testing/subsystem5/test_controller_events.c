@@ -14,6 +14,7 @@ static unsigned search_progress;
 static unsigned connection = 7;
 static bool motor_busy;
 static S2_STATUS motor;
+static S2_TRAVEL encoder_travel;
 static S2_REPLY motor_reply;
 static uint16_t queued_command;
 
@@ -69,6 +70,12 @@ bool motion_get_feedback(S2_STATUS *status, S2_REPLY *reply, bool *busy)
     *status = motor;
     if (reply) *reply = motor_reply;
     *busy = motor_busy;
+    return true;
+}
+
+bool motion_get_travel(S2_TRAVEL *travel)
+{
+    *travel = encoder_travel;
     return true;
 }
 
@@ -170,7 +177,7 @@ static void complete_move(void)
 static void settle_step(void)
 {
     clock_ms += 260;
-    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0);
+    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
 }
 
@@ -198,7 +205,7 @@ static void test_imu_restart(void)
     exercise_imu = true;
     assert(b4_processor_init(&imu, NULL) == B4_CALIBRATION_COLLECTING);
     imu_samples(1000, 110);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(vehicle_request_start());
     work();
     assert(vehicle_state() == VC_FOLLOW_LINE && rearm_count == 1);
@@ -208,18 +215,18 @@ static void test_imu_restart(void)
     motor_stopped();
     work();
     assert(vehicle_state() == VC_IDLE && stop_count > stops && imu.stop_latched);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(!vehicle_request_start() && rearm_count == 1);
     imu_samples(1000, 40);
     assert(imu.stop_latched); /* Setting down alone does not restart. */
     assert(!vehicle_request_start() && imu.stop_latched && rearm_count == 1); /* Stale line. */
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(vehicle_request_start());
     imu_samples(0, 1); /* Hazard after enqueue, before worker acceptance. */
     work();
     assert(vehicle_state() == VC_IDLE && imu.stop_latched && rearm_count == 1);
     imu_samples(1000, 40);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(vehicle_request_start());
     assert(imu.stop_latched); /* Enqueue does not rearm. */
     work();
@@ -236,7 +243,7 @@ static void test_imu_restart(void)
 static void junction_sample(unsigned left, unsigned right, unsigned decoded, unsigned elapsed)
 {
     clock_ms += elapsed;
-    vehicle_submit_line(left, 0, right, 12, 12, FALSE, decoded);
+    vehicle_submit_line(left, 0, right, 12, 12, FALSE, decoded, BARCODE_SCAN_IDLE);
     work();
 }
 
@@ -361,13 +368,79 @@ static void test_barcode_junction(void)
     puts("PASS configured barcode commands, stopped-only mapping, and bounded tape recovery");
 }
 
+static void barcode_sample(BARCODE_SCAN scan, unsigned elapsed)
+{
+    clock_ms += elapsed;
+    vehicle_submit_line(80, 0, 80, 12, 12, FALSE, 0, scan);
+    work();
+}
+
+static void barcode_approach(uint32_t pulses)
+{
+    tracking_straight = true;
+    straight_since = clock_ms - VC_BARCODE_APPROACH_MS;
+    encoder_travel = (S2_TRAVEL){pulses, pulses};
+    barcode_sample(BARCODE_SCAN_ACTIVE, 10u);
+    assert(queued_command);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+}
+
+static void test_barcode_retry(void)
+{
+    vehicle_request_stop();
+    work();
+    motor_stopped();
+    work();
+    pending.obstacle_monitor = false;
+    model = (VC_MODEL){.state = VC_FOLLOW_LINE};
+
+    barcode_approach(0u);
+    encoder_travel = (S2_TRAVEL){300u, 300u};
+    barcode_sample(BARCODE_SCAN_MISSED, 100u);
+    assert(vehicle_state() == VC_RETRY_BARCODE && !queued_command);
+    motor_stopped();
+    work();
+    barcode_sample(BARCODE_SCAN_IDLE, 240u);
+    unsigned reverse_arg = S2_MANEUVER_REVERSE_BASE + 109u;
+    assert((queued_command & 15u) == S2_MANEUVER && queued_command >> 4 == reverse_arg);
+    encoder_travel = (S2_TRAVEL){630u, 630u};
+    complete_move();
+    assert(model.barcode_retry.settling && !queued_command);
+    motor_stopped();
+    work();
+    barcode_sample(BARCODE_SCAN_IDLE, 240u);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !queued_command);
+
+    barcode_approach(670u);
+    encoder_travel = (S2_TRAVEL){990u, 990u};
+    barcode_sample(BARCODE_SCAN_MISSED, 100u);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !pending.barcode_retry_mm);
+    if (queued_command) { motor_acknowledge(S2_REPLY_OK); work(); }
+
+    tracking_straight = true;
+    straight_since = clock_ms - VC_BARCODE_APPROACH_MS;
+    barcode_sample(BARCODE_SCAN_ACTIVE, 10u);
+    encoder_travel = (S2_TRAVEL){1290u, 1290u};
+    barcode_sample(BARCODE_SCAN_MISSED, 100u);
+    assert(vehicle_state() == VC_RETRY_BARCODE && !queued_command);
+    motor_stopped();
+    work();
+    barcode_sample(BARCODE_SCAN_IDLE, 240u);
+    assert(queued_command >> 4 == reverse_arg);
+    vehicle_request_stop();
+    work();
+    assert(vehicle_state() == VC_IDLE && !queued_command);
+    puts("PASS one straight barcode retry, no second reverse on the same scan, and STOP priority");
+}
+
 int main(void)
 {
     uint32_t request;
     VEHICLE_SNAPSHOT snapshot;
     assert(vehicle_init() == E_OK);
     vehicle_enable_obstacle_monitor();
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(work() == TMO_FEVR);
     assert(vehicle_get_snapshot(&snapshot) && !snapshot.obstacle_no_echo &&
            snapshot.obstacle_forward_mm == S5_UNKNOWN_RANGE && snapshot.start_block == VC_START_READY);
@@ -385,14 +458,14 @@ int main(void)
     assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE && command_count == 1);
     assert(!scan_count && !vehicle_obstacle_scan_request(&request, NULL));
     assert(vehicle_get_snapshot(&snapshot) && !snapshot.obstacle_no_echo && !snapshot.obstacle_blocked);
-    vehicle_submit_line(0, 0, 0, 24, 24, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 24, 24, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(command_count == 1);
     motor_acknowledge(S2_REPLY_SETTLING);
     work();
     assert(command_count == 1); /* Wait before retrying a settling rejection. */
     clock_ms += VC_REFRESH_MS;
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(command_count == 2);
     motor_acknowledge(S2_REPLY_OK);
@@ -401,7 +474,7 @@ int main(void)
     for (unsigned i = 0; i < 3; ++i) {
         clock_ms += 30;
         vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
-        vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+        vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
         assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE);
         assert(stop_count == 1 && scan_count == 0);
         assert(vehicle_get_snapshot(&snapshot) && snapshot.line_valid &&
@@ -460,7 +533,7 @@ int main(void)
     assert(work() == TMO_FEVR && !pending.reset && motor_busy);
     motor_stopped();
     work();
-    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0);
+    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     vehicle_submit_obstacle_range(606);
     assert(vehicle_request_start());
     work();
@@ -499,7 +572,7 @@ int main(void)
     assert(vehicle_get_snapshot(&snapshot) && !snapshot.obstacle_profile &&
            snapshot.avoidance_failure == S5_FAIL_NONE && !snapshot.reset_pending);
     /* START with a close obstacle requests avoidance directly from standstill. */
-    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0);
+    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     vehicle_submit_obstacle_range(208);
     unsigned before_start = command_count;
     assert(vehicle_request_start());
@@ -559,7 +632,7 @@ int main(void)
     search_progress = 10;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
-        vehicle_submit_line(200, 0, 26, 30, 30, FALSE, 0);
+        vehicle_submit_line(200, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
         work();
     }
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy);
@@ -568,7 +641,7 @@ int main(void)
     unsigned stops_before_rejoin = stop_count;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
-        vehicle_submit_line(108, 0, 200, 30, 30, FALSE, 0);
+        vehicle_submit_line(108, 0, 200, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
         work();
     }
     assert(model.avoidance.align_at_mm == 102);
@@ -594,17 +667,17 @@ int main(void)
 
     unsigned wakes_before = ranging_wakes;
     clock_ms += 260;
-    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0);
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     clock_ms += 10;
-    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0);
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(model.avoidance.phase == S5_COMPLETE && !vehicle_obstacle_ranging_paused());
     assert(ranging_wakes == wakes_before + 1 && scan_count == scans_before);
     assert(!vehicle_obstacle_scan_request(&request, NULL) && !queued_command);
     clock_ms += 10;
     vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
-    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0);
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE && queued_command);
     assert(vehicle_get_snapshot(&snapshot) && snapshot.line_valid &&
            snapshot.timestamp_ms == snapshot.line_timestamp_ms &&
@@ -654,7 +727,7 @@ int main(void)
            snapshot.avoidance_failure == S5_FAIL_NONE && !snapshot.obstacle_no_echo &&
            snapshot.start_block == VC_START_OBSTACLE && !queued_command);
     assert(!vehicle_request_start());
-    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0);
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(vehicle_state() == VC_IDLE && !queued_command);
     assert(vehicle_request_start());
@@ -688,4 +761,5 @@ int main(void)
     puts("PASS missing echo does not start a scan, close echo stops before scanning, and bypass preserves STOP");
     test_barcode_junction();
     test_imu_restart();
+    test_barcode_retry();
 }

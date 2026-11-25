@@ -77,6 +77,10 @@ static uint16_t drain_encoder(void)
     EI(saved);
     return result;
 }
+
+static S2_TRAVEL travel;
+
+S2_TRAVEL s2_core_travel(void) { return travel; }
 static void drive_ticks(unsigned w, unsigned ticks)
 {
     unsigned a=w?RIGHT_IN_A:LEFT_IN_A, b=w?RIGHT_IN_B:LEFT_IN_B;
@@ -125,6 +129,7 @@ static void fail(unsigned fault) { s2_core_stop(); state.faults |= fault; }
 void s2_core_init(void)
 {
     state=(__typeof__(state)){0};
+    travel=(S2_TRAVEL){0};
     for(unsigned i=0;i<2;i++)wheels[i]=(struct wheel_data){0};
     timing_fault_gap_us=0;
     state.level=1; /* 25% default target speed. */
@@ -333,6 +338,8 @@ void s2_core_service(void)
     /* RTOS owner calls once per absolute 10 ms release; use actual elapsed time. */
     if(!elapsed) return;
     uint16_t sample=drain_encoder();
+    travel.left += sample & 31u;
+    travel.right += (sample >> 5) & 31u;
     last_tick=now;
     bool moving=s2_core_busy();
     if(moving && (sample & (3u<<10))) { fail(FAULT_COUNTS); return; }

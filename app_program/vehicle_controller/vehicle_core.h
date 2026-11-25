@@ -7,8 +7,9 @@
 #define VC_LINE_REACQUIRE_WAIT_MS 1000u
 #define VC_SENSOR_MAX_AGE_MS 1000u
 #define VC_JUNCTION_SEARCH_DEG 18u
+#define VC_BARCODE_REVERSE_MAX_MM 420u
 typedef enum { VC_IDLE, VC_FOLLOW_LINE, VC_TURNING, VC_AVOIDING,
-               VC_RECOVER_LINE, VC_FAULT } VC_STATE;
+               VC_RECOVER_LINE, VC_FAULT, VC_RETRY_BARCODE } VC_STATE;
 typedef enum { VC_REASON_NONE, VC_REASON_STOP, VC_REASON_LINE_STOP,
                VC_REASON_STALE_LINE, VC_REASON_MOTOR, VC_REASON_LINK,
                VC_REASON_OBSTACLE, VC_REASON_BARCODE_LINE } VC_REASON;
@@ -22,7 +23,7 @@ typedef struct {
     unsigned start:1, stop:1, reset:1, ready:1, link_ok:1, line_valid:1, line_stop:1;
     unsigned obstacle_blocked:1, drive_failed:1, motor_busy:1;
     unsigned motor_faults:4, left_rpm:7, right_rpm:7;
-    unsigned barcode_turn:2, pivot_in_window:1;
+    unsigned barcode_turn:2, pivot_in_window:1, barcode_retry_mm:9;
     uint32_t line_age_ms;
     S5_AVOID_INPUT avoidance;
 } VC_INPUT;
@@ -33,6 +34,10 @@ typedef struct {
         uint32_t phase_at, line_at;
         unsigned phase:2, right:1, uturn:1, dark_samples:2, light_samples:2;
     } junction;
+    struct {
+        uint32_t phase_at;
+        unsigned distance_mm:9, settling:1;
+    } barcode_retry;
 } VC_MODEL;
 typedef struct {
     unsigned stop:1, left_rpm:7, right_rpm:7;

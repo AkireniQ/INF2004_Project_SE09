@@ -120,14 +120,15 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
         was_following = following;
 
         /* Apply the longer curve confirmation once there is a bar/space pattern. */
-        steering.reading_barcode = barcode_progress().elements >= 3u;
+        BARCODE_PROGRESS barcode = barcode_progress();
+        steering.reading_barcode = barcode.elements >= 3u;
         INT center = barcode_raw < 0 ? 0 : darkness(barcode_raw, white_raw[1], black_raw[1]);
         LF_CMD command;
         line_decide(left, center, right, &steering, &command);
         __atomic_store_n(&sampler_stage, S3_SUBMIT_LINE, __ATOMIC_RELAXED);
         vehicle_submit_line(left, center, right,
                             command.left, command.right, command.stop,
-                            letter ? (unsigned)(letter - 'A' + 1) : 0u);
+                            letter ? (unsigned)(letter - 'A' + 1) : 0u, barcode.scan);
         s3_record_barcode_sample(following, barcode_raw, time.lo, letter);
     }
 }

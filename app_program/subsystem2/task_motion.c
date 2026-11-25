@@ -126,7 +126,7 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
         }
         was_busy=busy;
         if(s2_core_faults())s2_discard_queue();
-        s2_publish(&snapshot,ready);
+        s2_publish(&snapshot,ready,s2_core_travel());
         if(have)s2_record_owner_result(word,age,reason,accepted);
 #if !APP_BUDDY1_DEMO
         bool still=!busy && s2_get_bits(&snapshot,9,9)<=2 && s2_get_bits(&snapshot,18,9)<=2;

@@ -23,6 +23,7 @@ static uint16_t commands[8];
 static uint32_t issued_ms[8];
 static struct {unsigned head:3;unsigned tail:3;unsigned count:4;unsigned stop:1;unsigned ready:1;unsigned result:1;unsigned processing:1;unsigned zero_level:1;} q;
 static S2_STATUS cached;
+static S2_TRAVEL cached_travel;
 static uint32_t result_seq;
 static S2_REPLY reply;
 uint32_t s2_now_ms(void) {SYSTIM t;tk_get_tim(&t);return t.lo;}
@@ -34,6 +35,7 @@ ER s2_transport_init(void)
     if(id<E_OK)return (ER)id;
     transport_lock=id;
     q=(__typeof__(q)){0};cached=(S2_STATUS){{0}};result_seq=0;reply=(S2_REPLY){0};
+    cached_travel=(S2_TRAVEL){0};
     return E_OK;
 }
 static bool submit(unsigned op,unsigned arg)
@@ -139,8 +141,18 @@ bool s2_take_request(uint16_t *word,uint32_t *issued)
     if(found){q.processing=1;*word=commands[q.head];*issued=issued_ms[q.head];q.head=(q.head+1)&7;q.count--;}
     unlock_transport();return found;
 }
-void s2_publish(const S2_STATUS *s,bool ready)
-{lock_transport();cached=*s;q.ready=ready;unlock_transport();}
+void s2_publish(const S2_STATUS *s,bool ready,S2_TRAVEL travel)
+{lock_transport();cached=*s;cached_travel=travel;q.ready=ready;unlock_transport();}
+
+bool motion_get_travel(S2_TRAVEL *travel)
+{
+    if (!transport_lock || !travel) return false;
+    lock_transport();
+    *travel = cached_travel;
+    bool ready = q.ready;
+    unlock_transport();
+    return ready;
+}
 void s2_record_result(bool ok)
 {lock_transport();q.result=ok;q.processing=0;result_seq++;unlock_transport();}
 void s2_discard_queue(void)

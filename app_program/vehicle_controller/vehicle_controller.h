@@ -14,7 +14,8 @@ BOOL vehicle_request_reset(void); /* stopped-only, never resumes movement */
 void vehicle_request_stop(void);  /* priority latch; cancels a pending START */
 void vehicle_notify_feedback(void); /* motion owner or MQTT link wakeup, task context */
 /* decoded is 0 for an ordinary sample, or 1..26 for a newly decoded A..Z. */
-void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned decoded);
+void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned decoded,
+                         BARCODE_SCAN scan);
 void vehicle_invalidate_line(void);
 BOOL vehicle_set_barcode_map(BARCODE_MAP map);
 BOOL vehicle_get_barcode_map(BARCODE_MAP *map);
