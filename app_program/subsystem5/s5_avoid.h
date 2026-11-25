@@ -10,14 +10,15 @@
 #define S5_MANEUVER_STOP_MM 150u
 #define S5_PASS_BODY_ALLOWANCE_MM 160u
 #ifndef S5_PASS_DEPTH_PERCENT
-#define S5_PASS_DEPTH_PERCENT 60u
+#define S5_PASS_DEPTH_PERCENT 55u
 #endif
 #ifndef S5_PASS_UNCERTAIN_DEPTH_MM
-#define S5_PASS_UNCERTAIN_DEPTH_MM 140u
+#define S5_PASS_UNCERTAIN_DEPTH_MM 130u
 #endif
 #define S5_MAX_PASS_MM 720u
 #define S5_APPROACH_RPM 20u
 #define S5_CLEARANCE_BEARING_DEG 45u
+#define S5_OUTWARD_CLEARANCE_BEARING_DEG 60u
 #ifndef S5_CHASSIS_WIDTH_MM
 #define S5_CHASSIS_WIDTH_MM 160u /* Verify the widest point, including tyres. */
 #endif
@@ -91,9 +92,11 @@ typedef struct {
 typedef struct {
     unsigned side:2, failure:4;
     unsigned offset_mm:9;
+    unsigned probe_left:1, probe_right:1;
 } S5_BYPASS;
 
 S5_BYPASS s5_plan_bypass(const S5_PROFILE *profile);
+S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm);
 unsigned s5_scan_range_limit(const S5_AVOID *state);
 unsigned s5_planned_pass_mm(const S5_PROFILE *profile, unsigned forward_mm);
 bool s5_avoid_executing(S5_PHASE phase);

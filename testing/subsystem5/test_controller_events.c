@@ -618,7 +618,7 @@ int main(void)
     work();
 
     settle_step();
-    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 196 + 177 + 160 - 225);
+    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 196 + 162 + 160 - 225);
     complete_move();
     settle_step();
     assert(model.avoidance.phase == S5_TURN_IN && queued_command == S2_ARC);

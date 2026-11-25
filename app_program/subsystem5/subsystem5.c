@@ -14,9 +14,13 @@
 #define RANGE_LOG_INTERVAL_MS 2000u
 #define SCAN_WAKE 1u
 #define BYPASS_SCAN_STEPS (S5_CLEARANCE_BEARING_DEG / S5_FINE_STEP)
+#define OUTWARD_SCAN_STEPS (S5_OUTWARD_CLEARANCE_BEARING_DEG / S5_FINE_STEP)
 
 _Static_assert(S5_CLEARANCE_BEARING_DEG % S5_FINE_STEP == 0 && BYPASS_SCAN_STEPS <= S5_CENTRE_INDEX,
                "The sweep must cover both clearance bearings");
+_Static_assert(S5_OUTWARD_CLEARANCE_BEARING_DEG % S5_FINE_STEP == 0 &&
+               OUTWARD_SCAN_STEPS <= S5_CENTRE_INDEX && S5_CENTRE_INDEX + OUTWARD_SCAN_STEPS < S5_SCAN_POINTS,
+               "The sweep must cover both outward clearance bearings");
 
 static ID scan_event;
 static unsigned servo_angle = S5_CENTRE_ANGLE;
@@ -207,11 +211,27 @@ static BOOL scan_obstacle(S5_PROFILE *profile, BOOL verbose, const uint32_t *req
     profile->right_path_mm = read_at(S5_CENTRE_INDEX + BYPASS_SCAN_STEPS, verbose,
                                      SCAN_CLEARANCE, S5_UNKNOWN_RANGE);
     if (request && !vehicle_obstacle_scan_current(*request)) goto cancelled;
+    S5_BYPASS plan = s5_plan_bypass_at_range(profile, limit_mm);
+    /* Confirm a fresh corridor reading. A coarse sweep can contain only one echo. */
+    if (plan.probe_left) {
+        profile->left_outward_mm = read_at(S5_CENTRE_INDEX - OUTWARD_SCAN_STEPS, verbose,
+                                          SCAN_CLEARANCE, S5_UNKNOWN_RANGE);
+        if (request && !vehicle_obstacle_scan_current(*request)) goto cancelled;
+    }
+    if (plan.probe_right) {
+        profile->right_outward_mm = read_at(S5_CENTRE_INDEX + OUTWARD_SCAN_STEPS, verbose,
+                                           SCAN_CLEARANCE, S5_UNKNOWN_RANGE);
+        if (request && !vehicle_obstacle_scan_current(*request)) goto cancelled;
+    }
     aim(S5_CENTRE_ANGLE);
     if (request) refresh_forward(*request);
     tm_printf((UB*)"%s paths T(left %u deg)=%u mm R(right %u deg)=%u mm (4094=open, 4095=unavailable)\n",
               tag, S5_CENTRE_ANGLE + S5_CLEARANCE_BEARING_DEG, (unsigned)profile->left_path_mm,
               S5_CENTRE_ANGLE - S5_CLEARANCE_BEARING_DEG, (unsigned)profile->right_path_mm);
+    if (plan.probe_left || plan.probe_right)
+        tm_printf((UB*)"%s outward clearance T(left %u deg)=%u mm R(right %u deg)=%u mm\n",
+                  tag, S5_CENTRE_ANGLE + S5_OUTWARD_CLEARANCE_BEARING_DEG, (unsigned)profile->left_outward_mm,
+                  S5_CENTRE_ANGLE - S5_OUTWARD_CLEARANCE_BEARING_DEG, (unsigned)profile->right_outward_mm);
     tm_printf((UB*)"%s edge offsets left=%d mm (%s), right=%d mm (%s)\n", tag,
               (int)profile->left_edge_mm, profile->left_edge_valid ? "estimated" : "unconfirmed",
               (int)profile->right_edge_mm, profile->right_edge_valid ? "estimated" : "unconfirmed");

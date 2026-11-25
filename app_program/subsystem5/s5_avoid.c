@@ -26,6 +26,8 @@
 #define LINE_ALIGN_TOLERANCE_MM 3
 
 _Static_assert(S2_ARC_ANGLE_DEG == 60u, "Return offset projections use a 60 degree arc");
+_Static_assert(S5_OUTWARD_CLEARANCE_BEARING_DEG == S2_ARC_ANGLE_DEG,
+               "Outward clearance must match the departure angle");
 _Static_assert(S5_PASS_DEPTH_PERCENT > 0u && S5_PASS_DEPTH_PERCENT <= 100u,
                "Estimated depth must be a percentage of the measured width");
 _Static_assert(S5_FOLLOW_CLEAR_MM + S5_PASS_UNCERTAIN_DEPTH_MM + S5_PASS_BODY_ALLOWANCE_MM <= S5_MAX_PASS_MM,
@@ -156,6 +158,25 @@ static unsigned required_side_range(unsigned offset)
     return diagonal_room > lateral_room ? diagonal_room : lateral_room;
 }
 
+static bool outward_probe_allowed(unsigned heading, unsigned offset)
+{
+    /* A known obstruction on departure takes priority over the outward echo. */
+    return !s5_range_available(heading) || heading >= departure_diagonal_mm(offset) + ARC_ENTRY_MM;
+}
+
+static bool outward_observed(unsigned range)
+{
+    return range != 0 && s5_range_available(range);
+}
+
+static bool outward_route_fits(unsigned heading, unsigned outward, unsigned offset)
+{
+    /* The 60-degree reading must project beyond the chassis and side margin. */
+    unsigned lateral_room = offset + (S5_CHASSIS_WIDTH_MM + 1u) / 2u + FRONT_MARGIN_MM;
+    return outward_probe_allowed(heading, offset) && outward_observed(outward) &&
+           outward >= diagonal_distance_mm(lateral_room);
+}
+
 unsigned s5_scan_range_limit(const S5_AVOID *state)
 {
     unsigned extra = state->scan_after_retrace ?
@@ -163,7 +184,7 @@ unsigned s5_scan_range_limit(const S5_AVOID *state)
     return S5_FOLLOW_CLEAR_MM + extra;
 }
 
-static S5_BYPASS plan_bypass(const S5_PROFILE *profile, unsigned limit_mm)
+S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm)
 {
     S5_BYPASS plan = {.failure = S5_FAIL_TARGET};
     if (!s5_range_measured(profile->nearest_mm) || profile->nearest_mm > limit_mm)
@@ -177,11 +198,19 @@ static S5_BYPASS plan_bypass(const S5_PROFILE *profile, unsigned limit_mm)
     unsigned right_path = side_range(profile->right_path_mm, profile->right_mm, right_required);
     bool left_room = !profile->left_clipped && left_offset <= MAX_LATERAL_OFFSET_MM;
     bool right_room = !profile->right_clipped && right_offset <= MAX_LATERAL_OFFSET_MM;
-    bool left = left_room && s5_range_available(left_path) && left_path >= left_required;
-    bool right = right_room && s5_range_available(right_path) && right_path >= right_required;
+    bool left = left_room && ((s5_range_available(left_path) && left_path >= left_required) ||
+                              outward_route_fits(profile->left_path_mm, profile->left_outward_mm, left_offset));
+    bool right = right_room && ((s5_range_available(right_path) && right_path >= right_required) ||
+                                outward_route_fits(profile->right_path_mm, profile->right_outward_mm, right_offset));
     if (!left && !right) {
-        if ((left_room && !s5_range_available(left_path)) ||
-            (right_room && !s5_range_available(right_path))) plan.failure = S5_FAIL_ECHO;
+        bool left_unobserved = !outward_observed(profile->left_outward_mm);
+        bool right_unobserved = !outward_observed(profile->right_outward_mm);
+        if (profile->front_mm >= ARC_ENTRY_MM) {
+            plan.probe_left = left_room && left_unobserved && outward_probe_allowed(profile->left_path_mm, left_offset);
+            plan.probe_right = right_room && right_unobserved && outward_probe_allowed(profile->right_path_mm, right_offset);
+        }
+        if ((left_room && !s5_range_available(left_path) && left_unobserved) ||
+            (right_room && !s5_range_available(right_path) && right_unobserved)) plan.failure = S5_FAIL_ECHO;
         else if (profile->left_clipped && profile->right_clipped) plan.failure = S5_FAIL_BOTH_LIMITS;
         else if (profile->left_clipped) plan.failure = S5_FAIL_LEFT_LIMIT;
         else if (profile->right_clipped) plan.failure = S5_FAIL_RIGHT_LIMIT;
@@ -205,7 +234,7 @@ static S5_BYPASS plan_bypass(const S5_PROFILE *profile, unsigned limit_mm)
 
 S5_BYPASS s5_plan_bypass(const S5_PROFILE *profile)
 {
-    return plan_bypass(profile, S5_FOLLOW_CLEAR_MM);
+    return s5_plan_bypass_at_range(profile, S5_FOLLOW_CLEAR_MM);
 }
 
 static S5_AVOID_OUTPUT advance(unsigned distance_mm)
@@ -435,7 +464,7 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
         state->range_seen = false;
         S5_PROFILE profile = in->profile;
         if (range_fresh && in->range_mm < profile.front_mm) profile.front_mm = in->range_mm;
-        S5_BYPASS plan = plan_bypass(&profile, clear_mm);
+        S5_BYPASS plan = s5_plan_bypass_at_range(&profile, clear_mm);
         if (plan.side != S5_NO_SIDE) {
             unsigned pass = s5_planned_pass_mm(&profile, range_fresh ? in->range_mm : S5_UNKNOWN_RANGE);
             if (pass > S5_MAX_PASS_MM) return wait_for_path(state, S5_FAIL_ROOM, in);

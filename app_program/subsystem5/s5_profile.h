@@ -41,6 +41,8 @@ typedef struct {
     unsigned angle_offset_deg : 7;
     unsigned left_path_mm : 12;
     unsigned right_path_mm : 12;
+    unsigned left_outward_mm : 12;
+    unsigned right_outward_mm : 12;
     unsigned width_status : 3;
     unsigned left_clipped : 1;
     unsigned right_clipped : 1;
