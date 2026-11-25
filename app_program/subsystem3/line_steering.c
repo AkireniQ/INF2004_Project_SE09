@@ -5,7 +5,7 @@
 #define STRAIGHT_RELEASE 50
 #define CURVE_DARKNESS 350
 #define CURVE_IMBALANCE 315
-#define CURVE_CONFIRM_SAMPLES 8
+#define CURVE_STRENGTH_AT_ENTRY 8u
 #define CURVE_HOLD_SAMPLES 14
 #define CURVE_TIGHT_SAMPLES 24
 #define CURVE_RECENTER_SAMPLES 2
@@ -39,11 +39,13 @@ static void confirm_curve(LF_STATE *state, int strong_side)
         state->candidate_side = (int8_t)strong_side;
         state->candidate_samples = 0;
     }
-    unsigned confirm_samples = state->settle_samples ? CURVE_EXIT_CONFIRM_SAMPLES
-                                                    : CURVE_CONFIRM_SAMPLES;
+    /* An edge touch after a bend or during barcode capture can be a brief
+       drift. Keep the mild trim until the same edge persists. */
+    unsigned confirm_samples = state->settle_samples || state->reading_barcode ?
+                               CURVE_EXIT_CONFIRM_SAMPLES : S3_CURVE_CONFIRM_SAMPLES;
     if (strong_side != 0 && ++state->candidate_samples >= confirm_samples) {
         state->curve_side = (int8_t)strong_side;
-        state->strong_samples = CURVE_CONFIRM_SAMPLES;
+        state->strong_samples = CURVE_STRENGTH_AT_ENTRY;
         state->settle_samples = 0;
     }
 }
@@ -142,8 +144,8 @@ void line_decide(int left, int center, int right, LF_STATE *state, LF_CMD *comma
         return;
     }
 
-    unsigned neutral_required = state->settle_samples ? CURVE_EXIT_NEUTRAL_SAMPLES
-                                                      : NEUTRAL_SAMPLES;
+    unsigned neutral_required = state->settle_samples || state->reading_barcode ?
+                                 CURVE_EXIT_NEUTRAL_SAMPLES : NEUTRAL_SAMPLES;
     if (demand * state->last_steer_side < 0 && state->neutral_samples < neutral_required) {
         demand = 0;
     }

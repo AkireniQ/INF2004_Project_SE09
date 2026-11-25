@@ -9,6 +9,7 @@
 #define S3_EDGE_DARKNESS 160
 #define S3_MAX_OUTER_RPM 14
 #define S3_CORRECTION_STEP_RPM 2
+#define S3_CURVE_CONFIRM_SAMPLES 14u /* 140 ms of consistent edge evidence */
 #define S3_BLIND_CURVE_LIMIT 160u /* 1.6 s at one sample every 10 ms */
 #define S3_CURVE_EXIT_SAMPLES 36u /* 360 ms, including the steering ramp down */
 
@@ -26,6 +27,7 @@ typedef struct {
     uint8_t settle_samples;
     bool sustained_curve;
     bool slew_hold;
+    bool reading_barcode;
 } LF_STATE;
 
 typedef struct {

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 
+#include "../../app_program/subsystem3/barcode.h"
 #include "../../app_program/subsystem3/line_steering.h"
 #include "../../app_program/vehicle_controller/vehicle_core.h"
 
@@ -57,6 +58,59 @@ static void check_early_release(void)
     assert(out.left == S3_CRUISE_RPM && out.right == S3_CRUISE_RPM);
 }
 
+static void check_brief_edge_touches(bool reading_barcode)
+{
+    LF_STATE state = {.reading_barcode = reading_barcode};
+    LF_CMD out;
+    unsigned length = reading_barcode ? 20u : 12u;
+    for (unsigned i = 0; i < 6u; ++i) {
+        int left = i % 2u ? 920 : 120;
+        int right = i % 2u ? 120 : 920;
+        for (unsigned sample = 0; sample < length; ++sample) {
+            line_decide(left, 0, right, &state, &out);
+            assert(!out.stop && !state.curve_side);
+            assert(out.left >= S3_CRUISE_RPM - 2 && out.left <= S3_CRUISE_RPM);
+            assert(out.right >= S3_CRUISE_RPM - 2 && out.right <= S3_CRUISE_RPM);
+        }
+    }
+    for (unsigned i = 0; i < 45u; ++i) line_decide(120, 0, 920, &state, &out);
+    assert(state.curve_side == 1 && !out.stop && out.right == 0);
+}
+
+static void check_barcode_at_crawl(void)
+{
+    /* Medium F at the speed produced by the steering wheel targets. */
+    const char *pattern = "nwnnwnwnn" "n" "nnwnwwnnn" "n" "nwnnwnwnn";
+    LF_STATE state = {0};
+    LF_CMD out;
+    unsigned width = 22000u, position = 0, element = 0, edge_age = 0;
+    int edge_side = 1;
+    char letter = 0;
+    barcode_reset();
+    for (uint32_t now = 0; now < 9000u && !letter; now += 10u) {
+        while (position >= width && element < BARCODE_FRAME_ELEMENTS + 1u) {
+            ++element;
+            if (element <= BARCODE_FRAME_ELEMENTS)
+                width += pattern[element - 1u] == 'w' ? 15479u : 5160u;
+        }
+        bool dark = element % 2u != 0 && element <= BARCODE_FRAME_ELEMENTS;
+        letter = barcode_feed(dark ? 3000 : 220, now);
+        bool reading = barcode_progress().elements >= 3u;
+        if (reading != state.reading_barcode || edge_age >= (reading ? 20u : 12u)) {
+            edge_age = 0;
+            edge_side = -edge_side;
+        }
+        state.reading_barcode = reading;
+        ++edge_age;
+        line_decide(edge_side < 0 ? 920 : 120, 0, edge_side > 0 ? 920 : 120, &state, &out);
+        assert(!out.stop && !state.curve_side);
+        assert(out.left >= S3_CRUISE_RPM - 2 && out.right >= S3_CRUISE_RPM - 2);
+        assert(out.left - out.right <= 2 && out.right - out.left <= 2);
+        position += (unsigned)(out.left + out.right) * 210u * 1000u / 12000u;
+    }
+    assert(letter == 'F');
+}
+
 static void check_curve(int side)
 {
     LF_STATE state = {0};
@@ -96,7 +150,7 @@ static void check_line_drop(void)
     LF_STATE state = {0};
     LF_CMD out;
 
-    for (unsigned sample = 0; sample < 10u; ++sample) {
+    for (unsigned sample = 0; sample < S3_CURVE_CONFIRM_SAMPLES + 2u; ++sample) {
         line_decide(80, 600, 950, &state, &out);
     }
     assert(state.curve_side == 1);
@@ -204,6 +258,9 @@ int main(void)
     check_steering();
     check_steering_reversal();
     check_early_release();
+    check_brief_edge_touches(false);
+    check_brief_edge_touches(true);
+    check_barcode_at_crawl();
     check_curve(-1);
     check_curve(1);
     check_line_drop();

@@ -4,7 +4,7 @@ The motion recovery regression compiles the production steering and controller l
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror testing/integration/test_motion_recovery.c \
-  app_program/subsystem3/line_steering.c \
+  app_program/subsystem3/line_steering.c app_program/subsystem3/barcode.c \
   app_program/vehicle_controller/vehicle_core.c app_program/subsystem5/s5_avoid.c \
   -o /tmp/test_motion_recovery
 /tmp/test_motion_recovery
@@ -19,6 +19,8 @@ The wheel matching regression adds a neutral interval before opposite steering, 
 The crawl load test interrupts a single wheel's encoder pulses until PWM exceeds the normal crawl cap. It then checks that the assist fades after motion resumes at the same RPM target and that a wheel that remains blocked still faults.
 
 The steering regression also checks that a short opposite edge after a sustained bend produces a smaller correction and that a persistent opposite edge can still start a second bend.
+
+The barcode regression replays alternating edge touches at cruise speed. The wheel difference stays at most 2 RPM during short touches, including while reading the medium F. Persistent edge evidence can still start a real curve. The replay checks steering and decoding with simulated sensor inputs.
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror testing/integration/test_motion_crawl.c \

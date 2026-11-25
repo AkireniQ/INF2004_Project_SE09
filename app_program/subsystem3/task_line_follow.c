@@ -119,6 +119,8 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
         char letter = following ? barcode_feed(barcode_raw, time.lo) : 0;
         was_following = following;
 
+        /* Apply the longer curve confirmation once there is a bar/space pattern. */
+        steering.reading_barcode = barcode_progress().elements >= 3u;
         INT center = barcode_raw < 0 ? 0 : darkness(barcode_raw, white_raw[1], black_raw[1]);
         LF_CMD command;
         line_decide(left, center, right, &steering, &command);
