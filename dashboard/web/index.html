@@ -46,23 +46,6 @@
       </section>
     </div>
 
-    <section class="card barcode-settings" aria-labelledby="barcode-settings-title">
-      <div class="section-top"><h2 id="barcode-settings-title">Barcode navigation</h2></div>
-      <form id="barcode-map-form">
-        <div class="barcode-choices">
-          <div><label for="barcode-left">Left</label><select id="barcode-left" disabled></select></div>
-          <div><label for="barcode-right">Right</label><select id="barcode-right" disabled></select></div>
-          <div><label for="barcode-straight">Straight</label><select id="barcode-straight" disabled></select></div>
-          <div><label for="barcode-uturn">U-turn</label><select id="barcode-uturn" disabled></select></div>
-        </div>
-        <div class="barcode-actions">
-          <button id="barcode-apply" type="submit" disabled>Apply mapping</button>
-          <p id="barcode-map-status" role="status">Waiting for the Pico’s active mapping.</p>
-        </div>
-      </form>
-      <p id="barcode-active" class="metric-note" hidden></p>
-    </section>
-
     <section class="telemetry-heading"><div><span class="eyebrow">03 / VEHICLE TELEMETRY</span><h1>What the car is doing</h1></div><p>Live values from the Pico · faded values are stale</p></section>
     <div class="telemetry-grid">
       <section class="card telemetry-card" id="vehicle-card">
@@ -70,8 +53,6 @@
         <div class="mission-value" id="mission-state">—</div>
         <p class="card-description" id="mission-description">Waiting for a mission-state report.</p>
         <div class="fault-list" id="vehicle-faults">Fault status unavailable</div>
-        <p class="metric-note" id="sonar-detail" hidden></p>
-        <div class="controller-checks"><strong id="start-blocker">Controller diagnostics unavailable</strong><p id="start-hint">Update the Pico firmware to report why START is blocked.</p><div class="mode-row"><span>IR age <strong id="ir-age">—</strong></span><span>Line stop <strong id="line-stop">—</strong></span></div><p id="controller-detail" class="metric-note">Waiting for live controller diagnostics.</p></div>
       </section>
       <section class="card telemetry-card" id="motion-card">
         <div class="section-top"><h2>Wheels &amp; motion</h2><span class="sample-status" id="motion-freshness">No data</span></div>
@@ -81,29 +62,45 @@
         </div>
         <div class="mode-row"><span>Motor mode <strong id="motion-mode">—</strong></span><span>Global speed level <strong id="speed-level">—</strong></span></div>
         <svg class="rpm-chart" id="rpm-chart" viewBox="0 0 400 70" role="img" aria-label="Recent left and right wheel RPM"><path id="left-rpm-path"></path><path id="right-rpm-path"></path></svg>
-        <div class="chart-key"><span>Left RPM</span><span>Right RPM</span><span>Recent 120 samples · auto scale</span></div>
+        <div class="chart-key"><span>Left RPM</span><span>Right RPM</span></div>
         <div class="fault-list" id="motor-faults">Motor fault status unavailable</div>
-        <p class="metric-note">Bounded-move progress: L <span id="left-progress">—</span> / R <span id="right-progress">—</span> counts. These are not total distance or lifetime encoder counts.</p>
       </section>
       <section class="card telemetry-card" id="line-card">
         <div class="section-top"><h2>Line sensors &amp; barcode</h2><span class="sample-status" id="line-freshness">No data</span></div>
         <div class="sensor-grid"><div><span class="sensor-light" id="left-ir-light"></span><span>Left IR</span><strong id="left-ir">—</strong></div><div><span class="sensor-light" id="right-ir-light"></span><span>Right IR</span><strong id="right-ir">—</strong></div></div>
-        <div class="mode-row"><span>Barcode <strong id="barcode">—</strong></span><span>Centre flag <strong id="centre-ir">—</strong></span></div>
-        <p class="metric-note">If this card is stale, check IR age in the Vehicle controller card for the Pico’s latest local readings.</p>
+        <div class="barcode-result">
+          <span class="field-label">DECODED BARCODE</span>
+          <strong id="barcode" class="barcode-value">—</strong>
+        </div>
+        <section class="barcode-settings" aria-labelledby="barcode-settings-title">
+          <h3 id="barcode-settings-title">Barcode navigation</h3>
+          <form id="barcode-map-form">
+            <div class="barcode-choices">
+              <div><label for="barcode-left">Left</label><select id="barcode-left" disabled></select></div>
+              <div><label for="barcode-right">Right</label><select id="barcode-right" disabled></select></div>
+              <div><label for="barcode-straight">Straight</label><select id="barcode-straight" disabled></select></div>
+              <div><label for="barcode-uturn">U-turn</label><select id="barcode-uturn" disabled></select></div>
+            </div>
+            <div class="barcode-actions">
+              <button id="barcode-apply" type="submit" disabled>Apply mapping</button>
+              <p id="barcode-map-status" role="status">Waiting for the Pico’s active mapping.</p>
+            </div>
+          </form>
+          <p id="barcode-active" class="metric-note" hidden></p>
+        </section>
       </section>
       <section class="card telemetry-card" id="terrain-card">
         <div class="section-top"><h2>Hump height</h2><span class="sample-status" id="terrain-freshness">No data</span></div>
         <span class="field-label">LAST COMPLETED HUMP</span><div class="metric"><span id="terrain-height">—</span><small>mm</small></div>
-        <div class="mode-row"><span>Highest since power-up <strong id="terrain-max-height">—</strong></span><span>Terrain <strong id="terrain-phase">—</strong></span></div>
       </section>
       <section class="card telemetry-card" id="obstacle-card">
-        <div class="section-top"><h2>Obstacle scan</h2><span class="sample-status" id="obstacle-freshness">No data</span></div>
-        <div class="obstacle-grid"><div><span class="field-label">NEAREST</span><strong id="obstacle-nearest">—</strong></div><div><span class="field-label">EST. WIDTH</span><strong id="obstacle-width">—</strong></div><div><span class="field-label">LEFT CLEARANCE</span><strong id="obstacle-left">—</strong></div><div><span class="field-label">RIGHT CLEARANCE</span><strong id="obstacle-right">—</strong></div></div>
-        <p class="metric-note">Appears when Buddy 5 submits a valid scan. A scan alone does not confirm that obstacle avoidance is running.</p>
+        <div class="section-top"><h2>Obstacle</h2></div>
+        <div class="obstacle-grid">
+          <div><span class="field-label">DETECTION</span><strong id="obstacle-status">Unavailable</strong></div>
+          <div><span class="field-label">LAST ESTIMATED WIDTH</span><strong id="obstacle-width">—</strong></div>
+        </div>
       </section>
-      <section class="card event-card"><div class="section-top"><h2>Connection &amp; mission events</h2><span class="tiny-label">LATEST 40</span></div><ol id="events" class="events"><li>Waiting for events.</li></ol></section>
     </div>
-    <p class="page-note">Heartbeat confirms connection. The mission state shows when the car is following the line, turning at a barcode junction, or bypassing an obstacle.</p>
   </main>
 </body>
 </html>

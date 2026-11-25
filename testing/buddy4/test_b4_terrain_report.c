@@ -39,10 +39,10 @@ int main(void)
     assert(!r.count && b4_terrain_report_next(&r, 2201, 1, &height, &maximum, &phase));
     assert(height == 22 && maximum == 37 && phase == B4_TERRAIN_PHASE_UNAVAILABLE);
 
-    unsigned char packet[3];
-    assert(s1_wire_terrain(packet, height, maximum, phase));
-    assert(packet[0] == 0x16 && packet[1] == 0xb8 && packet[2] == 0x04);
-    assert(!s1_wire_terrain(packet, height, 21, phase));
+    unsigned char packet[S1_TERRAIN_BYTES];
+    assert(s1_wire_terrain(packet, height));
+    assert(packet[0] == 0x16 && packet[1] == 0x18);
+    assert(!s1_wire_terrain(packet, B4_TERRAIN_HEIGHT_MAX_MM + 1u));
 
     out.hump_detected = 1;
     for (unsigned i = 0; i < B4_TERRAIN_QUEUE_SIZE; i++) b4_terrain_report_observe(&r, &out, 2300);

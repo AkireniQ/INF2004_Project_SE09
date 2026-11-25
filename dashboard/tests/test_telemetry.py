@@ -7,8 +7,10 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app import Dashboard
 from mqtt_protocol import decode_telemetry
 
-def motion_packet(faults=0,left=30,right=24):
+def motion_packet(faults=0,left=30,right=24,compact=False):
     value=1|(1<<2)|(faults<<5)|(left<<9)|(right<<18)|(42<<27)|(35<<34)|(100<<41)|(200<<54)
+    if compact:
+        return (value & ((1 << 41) - 1)).to_bytes(6, 'little')
     return value.to_bytes(9,'little')
 
 class TelemetryTests(unittest.TestCase):
@@ -99,6 +101,33 @@ class TelemetryTests(unittest.TestCase):
         self.assertTrue(self.d.snapshot()['start_allowed'])
         packet[0]=2
         with self.assertRaises(ValueError):decode_telemetry('controller',packet)
+
+    def test_compact_telemetry(self):
+        self.send('status', b'\x07')
+        motor = bytearray(motion_packet(2, compact=True))
+        motor[0] &= ~3
+        self.send('motion', motor)
+        self.send('controller', bytes.fromhex('03 05 04 03 01 02 03 e0 2e 00 00 98 3a'))
+        state = self.d.snapshot()
+        self.assertTrue(state['reset_allowed'])
+        self.assertFalse(state['start_allowed'])
+        controller = state['telemetry']['controller']['data']
+        self.assertEqual(controller['last_reject_label'], 'Motor fault latched')
+        self.assertEqual((controller['timing_gap_us'], controller['timing_limit_us']), (12000, 15000))
+        self.assertNotIn('line_age_ms', controller)
+        motion = state['telemetry']['motion']['data']
+        self.assertEqual(motion['right_pwm'], 35)
+        self.assertNotIn('right_progress', motion)
+        self.assertEqual(decode_telemetry('terrain', bytes.fromhex('16 18'))['height_mm'], 22)
+        for frame, detected, width in (
+            ('ff 07', None, None), ('50 10', True, 80), ('ff 17', True, None), ('50 08', False, 80)
+        ):
+            self.assertEqual(decode_telemetry('obstacle', bytes.fromhex(frame)),
+                             dict(detected=detected, width_mm=width))
+        for kind, frame in (('controller', '03 00 00 00 02 00 00 00 00 00 00 00 00'),
+                            ('motion', '00 00 00 00 00 02'), ('obstacle', '00 18')):
+            with self.assertRaises(ValueError):
+                decode_telemetry(kind, bytes.fromhex(frame))
 
     def test_timing_diagnostics_and_stopped_reset(self):
         packet=bytearray(31);packet[0]=2;packet[1]=5;packet[3]=3;packet[4]=1|2|64;packet[5]=2

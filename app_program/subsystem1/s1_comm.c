@@ -28,18 +28,17 @@ ER s1_publish_line(unsigned ir_bits, unsigned barcode)
     return publish(MQTT_ROUTE_LINE, data, sizeof(data));
 }
 
-ER s1_publish_terrain(unsigned height_mm, unsigned max_height_mm, unsigned phase)
+ER s1_publish_terrain(unsigned height_mm)
 {
-    unsigned char data[3];
-    if (!s1_wire_terrain(data, height_mm, max_height_mm, phase)) { return E_PAR; }
+    unsigned char data[S1_TERRAIN_BYTES];
+    if (!s1_wire_terrain(data, height_mm)) { return E_PAR; }
     return publish(MQTT_ROUTE_TERRAIN, data, sizeof(data));
 }
 
-ER s1_publish_obstacle(unsigned nearest_mm, unsigned width_mm,
-                       unsigned left_mm, unsigned right_mm)
+ER s1_publish_obstacle(S1_OBSTACLE_STATUS status, unsigned width_mm)
 {
-    unsigned char data[6];
-    if (!s1_wire_obstacle(data, nearest_mm, width_mm, left_mm, right_mm)) { return E_PAR; }
+    unsigned char data[S1_OBSTACLE_BYTES];
+    if (!s1_wire_obstacle(data, status, width_mm)) { return E_PAR; }
     return publish(MQTT_ROUTE_OBSTACLE, data, sizeof(data));
 }
 
