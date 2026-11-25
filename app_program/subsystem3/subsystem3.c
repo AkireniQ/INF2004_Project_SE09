@@ -35,6 +35,8 @@ EXPORT ER subsystem3_init(void)
 
 EXPORT ER subsystem3_start(void)
 {
+    ID reporter = app_start_task(s3_barcode_log_task, 23, TP_PRC1, "bar_log");
+    CHECK(reporter, "barcode serial logger");
     /* Pinned to core 0 (TP_PRC1); Buddy 2's motion task runs on core 1 */
     ID tid = app_start_task(line_follow_task, S3_PRI_LINE, TP_PRC1, "line_follow");
     return (tid < E_OK) ? tid : E_OK;

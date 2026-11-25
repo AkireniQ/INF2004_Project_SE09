@@ -1,12 +1,13 @@
 #include "barcode.h"
 #include <stdbool.h>
 
-#define BC_TH_HIGH 600
-#define BC_TH_LOW 400
-#define BC_ELEMENTS 29
-#define BC_MAX_GAP_MS 35u
+#define BC_MIN_CONTRAST 160
+#define BC_WHITE_FILTER 16
+#define BC_ELEMENTS BARCODE_FRAME_ELEMENTS
 #define BC_MIN_RUN_MS 15u
 #define BC_MAX_RUN_MS 1100u
+#define BC_PREFIX_SAMPLES 192u
+#define BC_SENTINEL_PATTERN "nwnnwnwnn"
 
 typedef struct { char ch; const char *pat; } C39;   /* w = wide, n = narrow, bar/space alternating */
 static const C39 c39[] = {
@@ -16,17 +17,30 @@ static const C39 c39[] = {
     {'M',"wnwnnnnwn"},{'N',"nnnnwnnww"},{'O',"wnnnwnnwn"},{'P',"nnwnwnnwn"},
     {'Q',"nnnnnnwww"},{'R',"wnnnnnwwn"},{'S',"nnwnnnwwn"},{'T',"nnnnwnwwn"},
     {'U',"wwnnnnnnw"},{'V',"nwwnnnnnw"},{'W',"wwwnnnnnn"},{'X',"nwnnwnnnw"},
-    {'Y',"wwnnwnnnn"},{'Z',"nwwnwnnnn"},{'*',"nwnnwnwnn"}
+    {'Y',"wwnnwnnnn"},{'Z',"nwwnwnnnn"},{'*',BC_SENTINEL_PATTERN}
 };
 
+/* Keep the beginning of the label while the optical contrast settles.
+   At the normal 10 ms cadence this covers the first wide black bar at
+   any of the three print sizes. */
 static struct {
-    uint32_t sampled_at, run_at, edge_at;
+    uint16_t elapsed_ms;
+    int16_t contrast;
+} prefix[BC_PREFIX_SAMPLES];
+
+static struct {
+    uint32_t sampled_at, edge_sampled_at, run_at, edge_at, prefix_at, first_at;
+    uint32_t committed_bars, bars, width_rejects;
     uint16_t widths[BC_ELEMENTS];
+    int white_level;
+    uint16_t reference_peak, observed_peak, prefix_count;
+    int16_t first_contrast, previous_contrast;
+    int8_t polarity, first_polarity;
     uint8_t count;
-    bool sampled, in_bar, edge_pending;
+    bool sampled, in_bar, edge_pending, have_edge;
 } reader;
 
-static char decode_char(const uint16_t *w)      /* w[0..8]: bar, space, bar, ... */
+static const C39 *decode_char(const uint16_t *w)  /* w[0..8]: bar, space, bar, ... */
 {
     bool wide[9] = {0};
     int i, k, best, wb = 32767, nb = 0, ws, ns = 0;
@@ -58,7 +72,7 @@ static char decode_char(const uint16_t *w)      /* w[0..8]: bar, space, bar, ...
         for (i = 0; i < 9; i++) {
             if ((c39[k].pat[i] == 'w') != wide[i]) { break; }
         }
-        if (i == 9) { return c39[k].ch; }
+        if (i == 9) { return &c39[k]; }
     }
     return 0;
 }
@@ -70,51 +84,119 @@ static bool character_gap(const uint16_t *sentinel, unsigned gap)
     return gap * 2u >= narrow && gap <= 2u * narrow;
 }
 
-static char decode29(const uint16_t *e)
+static bool payload_widths_match(const uint16_t *e, const char *pattern)
 {
-    if (decode_char(e) != '*' || decode_char(e + 20) != '*' ||
+    /* The two sentinels calibrate bar and space widths separately because
+       the optical footprint and edge thresholds affect them differently. */
+    const char *sentinel_pattern = BC_SENTINEL_PATTERN;
+    unsigned widths[2][2] = {{0}};
+    unsigned counts[2][2] = {{0}};
+    for (unsigned i = 0; i < 9; ++i) {
+        unsigned space = i % 2u;
+        bool wide = sentinel_pattern[i] == 'w';
+        widths[space][wide] += e[i] + e[20 + i];
+        counts[space][wide] += 2u;
+    }
+
+    for (unsigned i = 0; i < 9; ++i) {
+        unsigned space = i % 2u;
+        bool wide = pattern[i] == 'w';
+        unsigned measured = e[10 + i] * counts[space][wide] * 100u;
+        unsigned reference = widths[space][wide];
+        /* Rank alone can promote a stretched narrow bar and demote a
+           shortened wide bar, turning F into I or another valid symbol. */
+        unsigned minimum = wide ? 77u : 50u;
+        unsigned maximum = wide ? 140u : 160u;
+        if (measured < reference * minimum || measured > reference * maximum) return false;
+    }
+    return true;
+}
+
+static char decode29(const uint16_t *e, bool *width_rejected)
+{
+    const C39 *start = decode_char(e);
+    if (!start || start->ch != '*') return 0;
+    const C39 *end = decode_char(e + 20);
+    if (!end || end->ch != '*' ||
         !character_gap(e, e[9]) || !character_gap(e + 20, e[19])) {
         return 0;
     }
-    char letter = decode_char(e + 10);
-    return letter == '*' ? 0 : letter;
+    const C39 *letter = decode_char(e + 10);
+    if (!letter || letter->ch == '*') return 0;
+    if (!payload_widths_match(e, letter->pat)) {
+        *width_rejected = true;
+        return 0;
+    }
+    return letter->ch;
 }
 
 static char decode_any(const uint16_t *e)
 {
     uint16_t rev[BC_ELEMENTS];
-    char c = decode29(e);
+    bool width_rejected = false;
+    char c = decode29(e, &width_rejected);
     if (c != 0) { return c; }
     for (unsigned i = 0; i < BC_ELEMENTS; ++i) { rev[i] = e[BC_ELEMENTS - 1 - i]; }
-    return decode29(rev);
+    c = decode29(rev, &width_rejected);
+    if (!c && width_rejected) ++reader.width_rejects;
+    return c;
+}
+
+static void reset_edges(uint32_t now_ms)
+{
+    reader.edge_sampled_at = now_ms;
+    reader.bars = 0;
+    reader.in_bar = false;
+    reader.edge_pending = false;
+    reader.have_edge = false;
+    reader.count = 0;
+    reader.previous_contrast = 0;
 }
 
 void barcode_reset(void)
 {
+    reader.committed_bars += reader.bars;
     reader.sampled = false;
-    reader.in_bar = false;
-    reader.edge_pending = false;
-    reader.count = 0;
+    reader.polarity = 0;
+    reader.first_polarity = 0;
+    reader.prefix_count = 0;
+    reader.reference_peak = 0;
+    reader.observed_peak = 0;
+    reset_edges(0);
 }
 
-char barcode_feed(int darkness, uint32_t now_ms)
+BARCODE_PROGRESS barcode_progress(void)
 {
-    if (!reader.sampled || now_ms - reader.sampled_at > BC_MAX_GAP_MS) {
-        barcode_reset();
-        reader.sampled = true;
-        reader.run_at = now_ms;
-    }
-    reader.sampled_at = now_ms;
+    return (BARCODE_PROGRESS){
+        .bars = reader.committed_bars + reader.bars,
+        .width_rejects = reader.width_rejects,
+        .elements = reader.count,
+    };
+}
 
-    bool crossed = reader.in_bar ? darkness < BC_TH_LOW : darkness > BC_TH_HIGH;
+static char track_edge(int contrast, uint32_t now_ms)
+{
+    unsigned interval = now_ms - reader.edge_sampled_at;
+    int previous = reader.previous_contrast;
+    reader.edge_sampled_at = now_ms;
+    reader.previous_contrast = (int16_t)contrast;
+
+    int threshold = reader.reference_peak ? reader.reference_peak / 2 : BC_MIN_CONTRAST;
+    bool crossed = reader.in_bar ? contrast < threshold : contrast > threshold;
     if (!crossed) {
         reader.edge_pending = false;
         return 0;
     }
-    /* Timestamp the first sample of a confirmed edge. One bad sample
-       within a bar or space does not split its width. */
+    /* Interpolate the first threshold crossing and confirm it on the next
+       sample so a single glitch cannot split a narrow bar or space. */
     if (!reader.edge_pending) {
         reader.edge_at = now_ms;
+        int before = reader.in_bar ? previous - threshold : threshold - previous;
+        int after = reader.in_bar ? threshold - contrast : contrast - threshold;
+        if (before >= 0) {
+            unsigned span = (unsigned)(before + after);
+            reader.edge_at -= ((unsigned)after * interval + span / 2u) / span;
+        }
         reader.edge_pending = true;
         return 0;
     }
@@ -124,6 +206,11 @@ char barcode_feed(int darkness, uint32_t now_ms)
     reader.run_at = reader.edge_at;
     reader.in_bar = !ended_bar;
     reader.edge_pending = false;
+    if (reader.in_bar) ++reader.bars;
+    if (!reader.have_edge) {
+        reader.have_edge = true;
+        return 0; /* The leading white margin is outside the label. */
+    }
     if (width < BC_MIN_RUN_MS || width > BC_MAX_RUN_MS) {
         reader.count = 0;
         return 0;
@@ -138,5 +225,82 @@ char barcode_feed(int darkness, uint32_t now_ms)
     if (!ended_bar || reader.count != BC_ELEMENTS) return 0;
     char letter = decode_any(reader.widths);
     if (letter) reader.count = 0;
+    return letter;
+}
+
+static void save_prefix(int contrast, uint32_t now_ms)
+{
+    unsigned index = reader.prefix_count++;
+    prefix[index].contrast = (int16_t)contrast;
+    prefix[index].elapsed_ms = (uint16_t)(now_ms - reader.prefix_at);
+}
+
+static char track_sample(int contrast, uint32_t now_ms)
+{
+    if (reader.prefix_count < BC_PREFIX_SAMPLES) {
+        save_prefix(contrast, now_ms);
+        int previous = reader.previous_contrast;
+        int supported = contrast < previous ? contrast : previous;
+        if (supported > reader.observed_peak) reader.observed_peak = (uint16_t)supported;
+        int peak = reader.observed_peak;
+        /* Set the midpoint after a real peak has receded. A stronger wide bar
+           can reveal that the earlier narrow runs never reached full black. */
+        if (peak >= BC_MIN_CONTRAST && contrast <= peak - peak / 8 &&
+            peak > reader.reference_peak + reader.reference_peak / 16) {
+            reader.reference_peak = (uint16_t)peak;
+            reset_edges(reader.prefix_at);
+            char decoded = 0;
+            for (unsigned i = 0; i < reader.prefix_count; ++i) {
+                char letter = track_edge(prefix[i].contrast, reader.prefix_at + prefix[i].elapsed_ms);
+                if (letter) decoded = letter;
+            }
+            return decoded;
+        }
+    }
+    return track_edge(contrast, now_ms);
+}
+
+char barcode_feed(int adc, uint32_t now_ms)
+{
+    /* A missing reading is neither black nor white. The next timestamp
+       decides whether the gap was short enough to preserve this frame. */
+    if (adc < 0 || adc > 4095) return 0;
+    if (!reader.sampled || now_ms - reader.sampled_at > BARCODE_MAX_SAMPLE_GAP_MS ||
+        (reader.polarity && !reader.edge_pending && now_ms - reader.run_at > BC_MAX_RUN_MS)) {
+        barcode_reset();
+        reader.sampled = true;
+        reader.sampled_at = now_ms;
+        reader.white_level = adc * BC_WHITE_FILTER;
+    }
+
+    int delta = adc - reader.white_level / BC_WHITE_FILTER;
+    uint32_t previous_at = reader.sampled_at;
+    reader.sampled_at = now_ms;
+    if (!reader.polarity) {
+        int side = delta < 0 ? -1 : 1;
+        int contrast = side * delta;
+        if (contrast < BC_MIN_CONTRAST) {
+            reader.white_level += delta;
+            reader.first_polarity = 0;
+            return 0;
+        }
+        if (side != reader.first_polarity) {
+            reader.first_polarity = (int8_t)side;
+            reader.first_contrast = (int16_t)contrast;
+            reader.first_at = now_ms;
+            reader.prefix_at = previous_at;
+            return 0;
+        }
+        /* Freeze the paper level once the label starts. Blurred white gaps
+           between two bars can sit far above the actual paper reading. */
+        reader.polarity = (int8_t)side;
+        reader.run_at = reader.prefix_at;
+        reset_edges(reader.prefix_at);
+        save_prefix(reader.first_contrast, reader.first_at);
+        (void)track_edge(reader.first_contrast, reader.first_at);
+    }
+
+    char letter = track_sample(reader.polarity * delta, now_ms);
+    if (letter) reader.prefix_count = BC_PREFIX_SAMPLES;
     return letter;
 }

@@ -1,6 +1,6 @@
 /*
  * task_line_follow.c: line following (Buddy 3).
- * line_sense()  reads the 3 sensors -> darkness 0..1000
+ * line_sense() reads the two tracking sensors and raw barcode ADC
  * line_decide() PURE logic: darkness in, wheel RPM out (easy to unit-test)
  * line_follow_task() runs both every LINE_PERIOD_MS and drives Motion Control
  */
@@ -44,15 +44,14 @@ LOCAL INT darkness(INT raw, INT white, INT black)
 
 
 /* Only the outer sensors are required for steering and START. */
-EXPORT ER line_sense(INT *left, INT *center, INT *right)
+LOCAL ER line_sense(INT *left, INT *barcode_raw, INT *right)
 {
     INT left_raw = ir_read(0);
     INT right_raw = ir_read(2);
     if (left_raw < 0 || right_raw < 0) { return E_IO; }
     *left = darkness(left_raw, white_raw[0], black_raw[0]);
     *right = darkness(right_raw, white_raw[2], black_raw[2]);
-    INT barcode_raw = ir_read(1);
-    *center = barcode_raw < 0 ? -1 : darkness(barcode_raw, white_raw[1], black_raw[1]);
+    *barcode_raw = ir_read(1);
     return E_OK;
 }
 
@@ -97,13 +96,13 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
             continue;
         }
         (void)tk_can_wup(task);
-        INT left, center, right;
+        INT left, barcode_raw, right;
         __atomic_store_n(&sampler_stage, S3_READ_ADC, __ATOMIC_RELAXED);
-        ER sample = line_sense(&left, &center, &right);
+        ER sample = line_sense(&left, &barcode_raw, &right);
         if (sample == E_IO) {
             /* Retry the whole sample once so both tracking readings are fresh.
                The controller still times out the previous sample independently. */
-            sample = line_sense(&left, &center, &right);
+            sample = line_sense(&left, &barcode_raw, &right);
         }
         if (sample < E_OK) {
             vehicle_invalidate_line();
@@ -116,18 +115,19 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
         __atomic_store_n(&sampler_stage, S3_UPDATE_STEERING, __ATOMIC_RELAXED);
         BOOL following = vehicle_is_following();
         if (!following || !was_following) steering = (LF_STATE){0};
-        if (!following || !was_following || center < 0) barcode_reset();
-        char letter = 0;
-        if (following && center >= 0) {
-            letter = barcode_feed(center, time.lo);
-        }
+        if (!following || !was_following) barcode_reset();
+        char letter = following ? barcode_feed(barcode_raw, time.lo) : 0;
         was_following = following;
 
+        /* Apply the longer curve confirmation once there is a bar/space pattern. */
+        steering.reading_barcode = barcode_progress().elements >= 3u;
+        INT center = barcode_raw < 0 ? 0 : darkness(barcode_raw, white_raw[1], black_raw[1]);
         LF_CMD command;
         line_decide(left, center, right, &steering, &command);
         __atomic_store_n(&sampler_stage, S3_SUBMIT_LINE, __ATOMIC_RELAXED);
-        vehicle_submit_line(left, center < 0 ? 0 : center, right,
+        vehicle_submit_line(left, center, right,
                             command.left, command.right, command.stop,
                             letter ? (unsigned)(letter - 'A' + 1) : 0u);
+        s3_record_barcode_sample(following, barcode_raw, time.lo, letter);
     }
 }
