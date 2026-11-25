@@ -13,6 +13,7 @@
 #define SHORT_GAP_SAMPLES 10
 #define NEUTRAL_SAMPLES 4
 #define CURVE_EXIT_NEUTRAL_SAMPLES 4
+#define BARCODE_NEUTRAL_SAMPLES 14
 
 
 static int absolute(int value)
@@ -155,8 +156,8 @@ void line_decide(int left, int center, int right, LF_STATE *state, LF_CMD *comma
         }
     }
 
-    unsigned neutral_required = state->settle_samples || state->reading_barcode ?
-                                 CURVE_EXIT_NEUTRAL_SAMPLES : NEUTRAL_SAMPLES;
+    unsigned neutral_required = state->settle_samples ? CURVE_EXIT_NEUTRAL_SAMPLES : NEUTRAL_SAMPLES;
+    if (state->reading_barcode) neutral_required = BARCODE_NEUTRAL_SAMPLES;
     if (demand * state->last_steer_side < 0 && state->neutral_samples < neutral_required) {
         demand = 0;
     }
@@ -170,7 +171,7 @@ void line_decide(int left, int center, int right, LF_STATE *state, LF_CMD *comma
     if (state->correction_rpm != 0) {
         state->last_steer_side = state->correction_rpm < 0 ? -1 : 1;
         state->neutral_samples = 0;
-    } else if (state->neutral_samples < CURVE_EXIT_NEUTRAL_SAMPLES) {
+    } else if (state->neutral_samples < BARCODE_NEUTRAL_SAMPLES) {
         ++state->neutral_samples;
     }
     int left_rpm = S3_CRUISE_RPM + state->correction_rpm;

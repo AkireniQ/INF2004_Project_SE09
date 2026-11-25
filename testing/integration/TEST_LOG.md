@@ -20,7 +20,7 @@ The crawl load test interrupts a single wheel's encoder pulses until PWM exceeds
 
 The steering regression also checks that a short opposite edge after a sustained bend produces a smaller correction and that a persistent opposite edge can still start a second bend.
 
-The barcode regression replays alternating edge touches at cruise speed. The wheel difference stays at most 2 RPM during short touches, including while reading the medium F. Persistent edge evidence can still start a real curve. The replay checks steering and decoding with simulated sensor inputs.
+The barcode regression replays alternating edge touches at cruise speed while reading F at all three print sizes. During capture, the wheel difference stays at most 2 RPM and a steering reversal waits for 140 ms of neutral steering. Ordinary tracking uses the team's 40 ms neutral interval. The replay checks steering and decoding with simulated sensor inputs.
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror testing/integration/test_motion_crawl.c \

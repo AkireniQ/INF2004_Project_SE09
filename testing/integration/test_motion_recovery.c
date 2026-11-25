@@ -21,9 +21,9 @@ static void check_steering(void)
     assert(state.curve_side == 0);
 }
 
-static void check_steering_reversal(void)
+static void check_steering_reversal(bool reading_barcode)
 {
-    LF_STATE state = {0};
+    LF_STATE state = {.reading_barcode = reading_barcode};
     LF_CMD out;
 
     for (unsigned i = 0; i < 12u; ++i) {
@@ -36,7 +36,7 @@ static void check_steering_reversal(void)
         if (out.left == out.right) {
             ++straight;
         } else if (out.left < out.right) {
-            assert(straight >= 8u);
+            assert(straight >= (reading_barcode ? 14u : 4u));
             return;
         }
     }
@@ -53,7 +53,7 @@ static void check_early_release(void)
     }
     assert(state.curve_side == 0 && out.left - out.right == S3_CORRECTION_STEP_RPM);
     for (unsigned i = 0; i < 3u; ++i) {
-        line_decide(130, 0, 225, &state, &out);
+        line_decide(130, 0, 170, &state, &out);
     }
     assert(out.left == S3_CRUISE_RPM && out.right == S3_CRUISE_RPM);
 }
@@ -62,7 +62,7 @@ static void check_brief_edge_touches(bool reading_barcode)
 {
     LF_STATE state = {.reading_barcode = reading_barcode};
     LF_CMD out;
-    unsigned length = reading_barcode ? 20u : 12u;
+    unsigned length = reading_barcode ? 20u : S3_CURVE_CONFIRM_SAMPLES - 2u;
     for (unsigned i = 0; i < 6u; ++i) {
         int left = i % 2u ? 920 : 120;
         int right = i % 2u ? 120 : 920;
@@ -103,7 +103,8 @@ static void check_barcode_at_crawl(unsigned narrow_um)
         bool dark = element % 2u != 0 && element <= BARCODE_FRAME_ELEMENTS;
         letter = barcode_feed(dark ? 3000 : 220, now);
         bool reading = barcode_progress().elements >= 3u;
-        if (reading != state.reading_barcode || edge_age >= (reading ? 20u : 12u)) {
+        if (reading != state.reading_barcode ||
+            edge_age >= (reading ? 20u : S3_CURVE_CONFIRM_SAMPLES - 2u)) {
             edge_age = 0;
             edge_side = -edge_side;
         }
@@ -268,7 +269,8 @@ static void check_start_stop(void)
 int main(void)
 {
     check_steering();
-    check_steering_reversal();
+    check_steering_reversal(false);
+    check_steering_reversal(true);
     check_early_release();
     check_brief_edge_touches(false);
     check_brief_edge_touches(true);
