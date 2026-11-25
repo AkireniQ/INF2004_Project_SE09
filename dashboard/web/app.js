@@ -7,6 +7,10 @@ let commandQueue = Promise.resolve();
 let polling = false;
 let lastAckTime = "";
 let commandPosting = false;
+const barcodeActions = ["left", "right", "straight", "uturn"];
+let barcodeEdited = false;
+let barcodePosting = false;
+let barcodeError = "";
 function setFlag(id, value, fresh) {
   const node = el(id);
   node.className = "flag" + (fresh ? value ? " good" : " bad" : "");
@@ -18,7 +22,7 @@ function draw(data) {
   el("broker-address").textContent = `${data.broker}:${data.broker_port}`;
   el("topic-root").textContent = data.root;
   el("live-monitor").classList.toggle("online", data.broker_connected);
-  el("start").disabled = !data.start_allowed || commandBusy;
+  el("start").disabled = !data.start_allowed || commandBusy || barcodePosting;
   el("stop").disabled = !data.stop_allowed;
   el("reset").disabled = !data.reset_allowed || resetBusy;
   el("ready-dot").classList.toggle("online", data.start_allowed);
@@ -51,6 +55,7 @@ function draw(data) {
   for (const id of ["wifi", "mqtt", "subscribed"]) setFlag(id, data.pico[id], data.pico.fresh && data.broker_connected);
   el("status-hex").textContent = data.pico.hex ?? "—";
   drawTelemetry(data);
+  drawBarcodeMap(data);
   el("drop-status").textContent = data.pico.hex === null ? "Waiting for data" : data.pico.tx_drop || data.pico.rx_drop ? "DROP FLAG SET" : "NO DROP FLAGS";
   if (data.last_ack && data.last_ack.time !== lastAckTime && !commandPosting) {
     const ack = data.last_ack;
@@ -74,6 +79,7 @@ async function refresh() {
   } catch (error) {
     state = null;
     drawTelemetry(null);
+    drawBarcodeMap(null);
     el("start").disabled = el("stop").disabled = el("reset").disabled = true;
     el("live-monitor").classList.remove("online");
     el("ready-dot").classList.remove("online");
@@ -89,7 +95,7 @@ async function refresh() {
   }
 }
 function send(command) {
-  if (!state || (command === "start" && commandBusy) || (command === "reset" && resetBusy)) return;
+  if (!state || (command === "start" && (commandBusy || barcodePosting)) || (command === "reset" && resetBusy)) return;
   if (command === "reset") { resetBusy = true; el("reset").disabled = true; }
   if (command === "start") { commandBusy = true; el("start").disabled = true; }
   // Preserve operator click order, including STOP clicked while START is posting.
@@ -121,6 +127,84 @@ async function performSend(command) {
 el("start").addEventListener("click", () => send("start"));
 el("stop").addEventListener("click", () => send("stop"));
 el("reset").addEventListener("click", () => send("reset"));
+
+function barcodeDraft() {
+  return Object.fromEntries(barcodeActions.map(action => [action, el("barcode-" + action).value]));
+}
+
+function sameMapping(first, second) {
+  return Boolean(first && second && barcodeActions.every(action => first[action] === second[action]));
+}
+
+function drawBarcodeMap(data) {
+  const report = data?.telemetry?.barcode_map;
+  const active = report?.data;
+  const request = data?.barcode_request;
+  const pending = barcodePosting || request?.status === "pending";
+  if (active && (!barcodeEdited || (!pending && sameMapping(barcodeDraft(), active)))) {
+    barcodeEdited = false;
+    for (const action of barcodeActions) el("barcode-" + action).value = active[action];
+  }
+  for (const action of barcodeActions) el("barcode-" + action).disabled = !report?.fresh || pending;
+  const draft = barcodeDraft();
+  const duplicate = new Set(Object.values(draft)).size !== barcodeActions.length;
+  const changed = Boolean(active && !sameMapping(draft, active));
+  el("barcode-apply").disabled = pending || !data?.barcode_map_allowed || duplicate || !changed;
+
+  const activeRow = el("barcode-active");
+  activeRow.hidden = !active || (!changed && report.fresh);
+  if (active) activeRow.textContent = `${report.fresh ? "Active" : "Last reported"} mapping · Left ${active.left} · Right ${active.right} · Straight ${active.straight} · U-turn ${active.uturn}`;
+  const status = el("barcode-map-status");
+  let message = "";
+  if (pending) message = "Waiting for the Pico to confirm the mapping…";
+  else if (barcodeError) message = barcodeError;
+  else if (!report?.fresh) message = "Waiting for a live mapping from the Pico.";
+  else if (duplicate) message = "Use a different letter for each action.";
+  else if (request?.status === "unconfirmed" && changed && sameMapping(request.mapping, draft)) {
+    message = "The Pico did not confirm this mapping. Check the active mapping and try again while stopped.";
+  } else if (!data.barcode_map_allowed) message = "Stop the car to apply a mapping.";
+  else if (changed) message = "Mapping changes are ready to apply.";
+  else if (request?.status === "applied" && sameMapping(request.mapping, active)) message = "Mapping confirmed by the Pico.";
+  else message = "The mapping stays active until the Pico restarts.";
+  if (status.textContent !== message) status.textContent = message;
+  status.classList.toggle("error", Boolean(barcodeError || (report?.fresh && duplicate)));
+}
+
+for (const action of barcodeActions) {
+  const select = el("barcode-" + action);
+  for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") select.add(new Option(letter, letter));
+  select.value = "";
+  select.addEventListener("change", () => {
+    barcodeEdited = true;
+    barcodeError = "";
+    drawBarcodeMap(state);
+  });
+}
+el("barcode-map-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!state || el("barcode-apply").disabled) return;
+  const mapping = barcodeDraft();
+  barcodePosting = true;
+  el("start").disabled = true;
+  barcodeError = "";
+  drawBarcodeMap(state);
+  try {
+    const response = await fetch("/api/barcode-map", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Dashboard-Token": state.csrf },
+      body: JSON.stringify(mapping), signal: AbortSignal.timeout(5000)
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The mapping could not be sent.");
+    if (state) state.barcode_request = result.barcode_request;
+  } catch (error) {
+    barcodeError = error.name === "TimeoutError" ? "Delivery is uncertain. Check the active mapping before retrying." : error.message;
+  } finally {
+    barcodePosting = false;
+    drawBarcodeMap(state);
+    await refresh();
+  }
+});
+
 refresh();
 setInterval(refresh, 1000);
 

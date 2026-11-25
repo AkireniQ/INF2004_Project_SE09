@@ -23,10 +23,10 @@ static const char * const topics[MQTT_ROUTE_COUNT] = {
     MQTT_TOPIC_ROOT "/line", MQTT_TOPIC_ROOT "/terrain",
     MQTT_TOPIC_ROOT "/obstacle", MQTT_TOPIC_ROOT "/vehicle",
     MQTT_TOPIC_ROOT "/ack", MQTT_TOPIC_ROOT "/command",
-    MQTT_TOPIC_ROOT "/controller", MQTT_TOPIC_ROOT "/sonar"
+    MQTT_TOPIC_ROOT "/controller", MQTT_TOPIC_ROOT "/sonar", MQTT_TOPIC_ROOT "/barcode_map"
 };
 /* Fail compilation rather than silently truncate a configured topic. */
-typedef char topic_must_fit[(sizeof(MQTT_TOPIC_ROOT "/controller") <= TOPIC_MAX) ? 1 : -1];
+typedef char topic_must_fit[(sizeof(MQTT_TOPIC_ROOT "/barcode_map") <= TOPIC_MAX) ? 1 : -1];
 static mqtt_client_t *client;
 static ip_addr_t broker;
 static u8_t connecting;

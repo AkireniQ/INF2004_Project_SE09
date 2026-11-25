@@ -29,6 +29,31 @@ int s1_command_decode(const unsigned char *data, unsigned length, unsigned *opco
     return 1;
 }
 
+int s1_wire_barcode_map(unsigned char out[S1_BARCODE_MAP_BYTES], BARCODE_MAP map)
+{
+    if (!out || !barcode_map_valid(map)) return 0;
+    out[0] = out[1] = out[2] = 0;
+    s1_wire_put(out, 0, 5, map.left);
+    s1_wire_put(out, 5, 5, map.right);
+    s1_wire_put(out, 10, 5, map.straight);
+    s1_wire_put(out, 15, 5, map.uturn);
+    s1_wire_put(out, 20, 4, 0xAu);
+    return 1;
+}
+
+int s1_decode_barcode_map(const unsigned char *data, unsigned length, BARCODE_MAP *map)
+{
+    if (!data || !map || length != S1_BARCODE_MAP_BYTES || s1_wire_get(data, 20, 4) != 0xAu)
+        return 0;
+    BARCODE_MAP decoded = {
+        .left = s1_wire_get(data, 0, 5), .right = s1_wire_get(data, 5, 5),
+        .straight = s1_wire_get(data, 10, 5), .uturn = s1_wire_get(data, 15, 5),
+    };
+    if (!barcode_map_valid(decoded)) return 0;
+    *map = decoded;
+    return 1;
+}
+
 int s1_wire_line(unsigned char out[1], unsigned ir, unsigned barcode)
 {
     if (out == 0 || ir > 7u || barcode > 26u) { return 0; }

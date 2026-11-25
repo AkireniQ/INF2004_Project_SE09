@@ -1,6 +1,7 @@
 #ifndef VEHICLE_CONTROLLER_H
 #define VEHICLE_CONTROLLER_H
 #include "../app.h"
+#include "../subsystem3/barcode.h"
 #include "vehicle_core.h"
 #ifndef TM_MQTT
 #define TM_MQTT 0
@@ -15,6 +16,8 @@ void vehicle_notify_feedback(void); /* motion owner or MQTT link wakeup, task co
 /* decoded is 0 for an ordinary sample, or 1..26 for a newly decoded A..Z. */
 void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned decoded);
 void vehicle_invalidate_line(void);
+BOOL vehicle_set_barcode_map(BARCODE_MAP map);
+BOOL vehicle_get_barcode_map(BARCODE_MAP *map);
 /* Buddy 4/5 publish measurements through these copied snapshots. */
 BOOL vehicle_submit_terrain(unsigned height_mm, unsigned max_height_mm, unsigned phase);
 void vehicle_enable_obstacle_monitor(void);

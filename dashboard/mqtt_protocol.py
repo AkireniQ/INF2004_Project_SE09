@@ -3,7 +3,8 @@ STATES = ('IDLE', 'FOLLOW_LINE', 'TURNING', 'AVOIDING', 'RECOVER_LINE', 'FAULT')
 MOTOR_MODES = ('IDLE', 'VELOCITY', 'DISTANCE', 'TURN')
 MOTOR_FAULTS = ((1, 'Encoder counts'), (2, 'Control timing'), (4, 'Wheel stalled'), (8, 'Command timeout'))
 VEHICLE_FAULTS = ((1, 'Motor'), (2, 'Encoder'), (4, 'IMU'), (8, 'Ultrasonic echo'), (16, 'Wi-Fi'))
-TELEMETRY_TOPICS = ('vehicle', 'motion', 'line', 'terrain', 'obstacle', 'controller', 'sonar')
+TELEMETRY_TOPICS = ('vehicle', 'motion', 'line', 'terrain', 'obstacle', 'controller', 'sonar', 'barcode_map')
+BARCODE_ACTIONS = ('left', 'right', 'straight', 'uturn')
 START_BLOCK_REPOSITION = 8
 STOP_REASON_OPERATOR = 1
 STOP_REASONS = (
@@ -33,13 +34,33 @@ def command_payload(command):
     if command == 'reset': return b'\x02'
     raise ValueError('command must be start, stop or reset')
 
+def barcode_map_payload(mapping):
+    if not isinstance(mapping, dict) or set(mapping) != set(BARCODE_ACTIONS):
+        raise ValueError('Choose a letter for each of the four actions.')
+    word = 0xA << 20
+    seen = set()
+    for index, action in enumerate(BARCODE_ACTIONS):
+        letter = mapping[action]
+        if not isinstance(letter, str) or len(letter) != 1 or not 'A' <= letter <= 'Z':
+            raise ValueError('Choose letters from A to Z.')
+        if letter in seen:
+            raise ValueError('Use a different letter for each action.')
+        seen.add(letter)
+        word |= (ord(letter) - ord('A') + 1) << (5 * index)
+    return word.to_bytes(3, 'little')
+
 def decode_telemetry(kind, payload):
     sizes = dict(vehicle=(1,), motion=(9,), line=(1,), terrain=(2, 3),
-                 obstacle=(6,), controller=(25, 31), sonar=(4,))
+                 obstacle=(6,), controller=(25, 31), sonar=(4,), barcode_map=(3,))
     if len(payload) not in sizes.get(kind, ()):
         raise ValueError('Incorrect binary telemetry length')
     word = int.from_bytes(payload, 'little')
     def bits(offset, width): return (word >> offset) & ((1 << width) - 1)
+    if kind == 'barcode_map':
+        letters = [bits(5 * index, 5) for index in range(len(BARCODE_ACTIONS))]
+        if bits(20, 4) != 0xA or min(letters) < 1 or max(letters) > 26 or len(set(letters)) != 4:
+            raise ValueError('Invalid barcode mapping')
+        return dict(zip(BARCODE_ACTIONS, (chr(ord('A') + letter - 1) for letter in letters)))
     if kind == 'controller':
         if (payload[0],len(payload)) not in ((1,25),(2,31)) or payload[1] >= len(STATES) or payload[2] >= len(STOP_REASONS) or payload[3] > 8 or payload[24] > 8 or (payload[0]==1 and payload[4] & 128) or payload[5] > 15:
             raise ValueError('Invalid controller diagnostics')

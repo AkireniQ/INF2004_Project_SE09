@@ -2,6 +2,7 @@
 The simulated Pico here is a protocol fixture, not hardware validation.
 """
 import argparse
+from test_dashboard import DEFAULT_MAP, CUSTOM_MAP, CUSTOM_MAP_PACKET
 from test_telemetry import motion_packet
 import http.client
 import json
@@ -16,6 +17,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import Dashboard, DashboardServer
+from mqtt_protocol import barcode_map_payload, decode_telemetry
 
 
 def wait_until(condition, timeout=8):
@@ -50,6 +52,7 @@ def main():
                 return False
         wait_until(broker_ready)
         commands = []
+        mappings = []
         subscribed = threading.Event()
         root = "robot/mtk3smp-pico/v2"
         fixture = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="pico-protocol-fixture")
@@ -59,6 +62,10 @@ def main():
         def on_subscribe(client, userdata, mid, reasons, properties):
             subscribed.set()
         def on_message(client, userdata, message):
+            if len(message.payload) == 3:
+                decode_telemetry("barcode_map", message.payload)
+                mappings.append((bytes(message.payload), message.qos, bool(message.retain)))
+                return
             assert message.payload in (b"\x00", b"\x01", b"\x02")
             commands.append((bytes(message.payload), message.qos, bool(message.retain)))
             client.publish(root + "/ack", b"\x04" if message.payload==b"\x02" else message.payload, qos=0, retain=False)
@@ -191,6 +198,34 @@ def main():
             expect(page.locator("#reset")).to_be_disabled()
             assert commands[-1]==(b"\x02",0,False) and len(commands)==5
             print("PASS fault recovery: stopped-only RESET sends02, clears fixture fault, leaves mission IDLE and never sends START")
+            fixture.publish(root + "/status", b"\x07").wait_for_publish(timeout=5)
+            fixture.publish(root + "/barcode_map", barcode_map_payload(DEFAULT_MAP)).wait_for_publish(timeout=5)
+            fixture.publish(root + "/motion", bytes(9)).wait_for_publish(timeout=5)
+            expect(page.locator("#barcode-left")).to_have_value("A")
+            assert page.locator("#barcode-left option").count() == 26
+            page.get_by_label("Left", exact=True).select_option("F")
+            expect(page.locator("#barcode-map-status")).to_have_text("Use a different letter for each action.")
+            expect(page.locator("#barcode-apply")).to_be_disabled()
+            # Refresh stopped telemetry before submitting to the real HTTP endpoint.
+            diag = bytes((2, 0, 0, 0, 1 | 2 | 64)) + bytes(26)
+            for kind, packet in (("controller", diag), ("motion", bytes(9)),
+                                 ("barcode_map", barcode_map_payload(DEFAULT_MAP))):
+                fixture.publish(root + "/" + kind, packet).wait_for_publish(timeout=5)
+            for action, letter in CUSTOM_MAP.items():
+                page.locator("#barcode-" + action).select_option(letter)
+            page.get_by_role("button", name="Apply mapping").click()
+            expect(page.locator("#barcode-map-status")).to_contain_text("Waiting for the Pico to confirm")
+            expect(page.locator("#start")).to_be_disabled()
+            expect(page.locator("#stop")).to_be_enabled()
+            wait_until(lambda: len(mappings) == 1)
+            assert mappings == [(CUSTOM_MAP_PACKET, 0, False)]
+            for kind, packet in (("controller", diag), ("motion", bytes(9)),
+                                 ("barcode_map", CUSTOM_MAP_PACKET)):
+                fixture.publish(root + "/" + kind, packet).wait_for_publish(timeout=5)
+            expect(page.locator("#barcode-map-status")).to_have_text("Mapping confirmed by the Pico.")
+            expect(page.locator("#barcode-left")).to_have_value("Z")
+            expect(page.locator("#start")).to_be_enabled()
+            print("PASS barcode mapping: duplicate validation, binary MQTT update, and confirmation from the active report")
             fixture.publish(root+"/vehicle",b"\x01").wait_for_publish(timeout=5)
             fixture.publish(root+"/motion",motion_packet()).wait_for_publish(timeout=5)
             # Fresh signal for a representative desktop screenshot.
@@ -220,6 +255,7 @@ def main():
             expect(page.locator("#pico-state")).to_have_text("Broker unavailable")
             assert page.locator("#start").is_disabled() and page.locator("#stop").is_disabled()
             assert len(commands) == 5  # No automatic command/replay.
+            assert len(mappings) == 1
             assert not errors, errors
             print("PASS browser: broker loss disables controls; no auto-command; no JavaScript errors")
             browser.close()

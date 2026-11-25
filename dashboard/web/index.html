@@ -46,6 +46,23 @@
       </section>
     </div>
 
+    <section class="card barcode-settings" aria-labelledby="barcode-settings-title">
+      <div class="section-top"><h2 id="barcode-settings-title">Barcode navigation</h2></div>
+      <form id="barcode-map-form">
+        <div class="barcode-choices">
+          <div><label for="barcode-left">Left</label><select id="barcode-left" disabled></select></div>
+          <div><label for="barcode-right">Right</label><select id="barcode-right" disabled></select></div>
+          <div><label for="barcode-straight">Straight</label><select id="barcode-straight" disabled></select></div>
+          <div><label for="barcode-uturn">U-turn</label><select id="barcode-uturn" disabled></select></div>
+        </div>
+        <div class="barcode-actions">
+          <button id="barcode-apply" type="submit" disabled>Apply mapping</button>
+          <p id="barcode-map-status" role="status">Waiting for the Pico’s active mapping.</p>
+        </div>
+      </form>
+      <p id="barcode-active" class="metric-note" hidden></p>
+    </section>
+
     <section class="telemetry-heading"><div><span class="eyebrow">03 / VEHICLE TELEMETRY</span><h1>What the car is doing</h1></div><p>Live values from the Pico · faded values are stale</p></section>
     <div class="telemetry-grid">
       <section class="card telemetry-card" id="vehicle-card">
