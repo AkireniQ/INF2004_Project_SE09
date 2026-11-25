@@ -144,6 +144,17 @@ void line_decide(int left, int center, int right, LF_STATE *state, LF_CMD *comma
         return;
     }
 
+    if (state->reading_barcode) {
+        /* Keep both tracking sensors in control without swinging the
+           forward-mounted barcode sensor through a hard correction. */
+        if (absolute(demand) > S3_CORRECTION_STEP_RPM) {
+            demand = (demand > 0 ? 1 : -1) * S3_CORRECTION_STEP_RPM;
+        }
+        if (absolute(state->correction_rpm) > S3_CORRECTION_STEP_RPM) {
+            state->correction_rpm = (state->correction_rpm > 0 ? 1 : -1) * S3_CORRECTION_STEP_RPM;
+        }
+    }
+
     unsigned neutral_required = state->settle_samples || state->reading_barcode ?
                                  CURVE_EXIT_NEUTRAL_SAMPLES : NEUTRAL_SAMPLES;
     if (demand * state->last_steer_side < 0 && state->neutral_samples < neutral_required) {
@@ -166,8 +177,8 @@ void line_decide(int left, int center, int right, LF_STATE *state, LF_CMD *comma
     int right_rpm = S3_CRUISE_RPM - state->correction_rpm;
     /* On the straight, use half the previous wheel-speed difference.
      * The turn targets still use the full range. */
-    int outer_limit = state->curve_side == 0 &&
-                      absolute(state->correction_rpm) <= S3_CORRECTION_STEP_RPM
+    int outer_limit = state->reading_barcode || (state->curve_side == 0 &&
+                      absolute(state->correction_rpm) <= S3_CORRECTION_STEP_RPM)
                       ? S3_CRUISE_RPM : S3_MAX_OUTER_RPM;
     *command = (LF_CMD){
         .left = left_rpm > outer_limit ? outer_limit : left_rpm,

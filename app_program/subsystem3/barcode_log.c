@@ -4,7 +4,7 @@
 #define BARCODE_REPORT_MS 2000u
 
 typedef struct {
-    UW bars, adc_errors, gaps, max_gap_ms;
+    UW bars, adc_errors, gaps, max_gap_ms, width_rejects;
     UW sampled_at, reported_at;
     uint16_t min_adc, max_adc;
     uint8_t max_elements;
@@ -57,12 +57,14 @@ EXPORT void s3_record_barcode_sample(BOOL following, INT adc, UW now_ms, char le
     }
 
     BARCODE_PROGRESS progress = barcode_progress();
+    bool rejected = !first && progress.width_rejects != report.width_rejects;
+    report.width_rejects = progress.width_rejects;
     if (progress.in_bar && !report.in_bar) ++report.bars;
     report.in_bar = progress.in_bar;
     unsigned elements = letter ? BARCODE_FRAME_ELEMENTS : progress.elements;
     if (elements > report.max_elements) report.max_elements = (uint8_t)elements;
     if (letter) report.letter = letter;
-    if (first || letter || now_ms - report.reported_at >= BARCODE_REPORT_MS) {
+    if (first || letter || rejected || now_ms - report.reported_at >= BARCODE_REPORT_MS) {
         report.reported_at = now_ms;
         publish_report(&report);
     }
@@ -88,13 +90,14 @@ EXPORT void s3_barcode_log_task(INT stacd, void *exinf)
         if (next != seen) {
             seen = next;
             tm_printf((UB *)"[BC] %s GP27=%d..%d bars=%u window=%u adc_errors=%u "
-                            "sample_gaps=%u max_gap=%u ms decoded=%c\n",
+                            "sample_gaps=%u max_gap=%u ms width_rejects=%u decoded=%c\n",
                       report.following ? "following" : "paused",
                       report.has_adc ? (INT)report.min_adc : -1,
                       report.has_adc ? (INT)report.max_adc : -1,
                       (unsigned)report.bars, (unsigned)report.max_elements,
                       (unsigned)report.adc_errors, (unsigned)report.gaps,
-                      (unsigned)report.max_gap_ms, report.letter ? report.letter : '-');
+                      (unsigned)report.max_gap_ms, (unsigned)report.width_rejects,
+                      report.letter ? report.letter : '-');
         }
         (void)tk_slp_tsk(TMO_FEVR);
     }

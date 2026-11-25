@@ -6,6 +6,7 @@
 #define BC_ELEMENTS BARCODE_FRAME_ELEMENTS
 #define BC_MIN_RUN_MS 15u
 #define BC_MAX_RUN_MS 1100u
+#define BC_SENTINEL_PATTERN "nwnnwnwnn"
 
 typedef struct { char ch; const char *pat; } C39;   /* w = wide, n = narrow, bar/space alternating */
 static const C39 c39[] = {
@@ -15,11 +16,12 @@ static const C39 c39[] = {
     {'M',"wnwnnnnwn"},{'N',"nnnnwnnww"},{'O',"wnnnwnnwn"},{'P',"nnwnwnnwn"},
     {'Q',"nnnnnnwww"},{'R',"wnnnnnwwn"},{'S',"nnwnnnwwn"},{'T',"nnnnwnwwn"},
     {'U',"wwnnnnnnw"},{'V',"nwwnnnnnw"},{'W',"wwwnnnnnn"},{'X',"nwnnwnnnw"},
-    {'Y',"wwnnwnnnn"},{'Z',"nwwnwnnnn"},{'*',"nwnnwnwnn"}
+    {'Y',"wwnnwnnnn"},{'Z',"nwwnwnnnn"},{'*',BC_SENTINEL_PATTERN}
 };
 
 static struct {
     uint32_t sampled_at, run_at, edge_at;
+    uint32_t width_rejects;
     uint16_t widths[BC_ELEMENTS];
     int white_level;
     uint16_t bar_peak;
@@ -29,7 +31,7 @@ static struct {
     bool sampled, in_bar, edge_pending;
 } reader;
 
-static char decode_char(const uint16_t *w)      /* w[0..8]: bar, space, bar, ... */
+static const C39 *decode_char(const uint16_t *w)  /* w[0..8]: bar, space, bar, ... */
 {
     bool wide[9] = {0};
     int i, k, best, wb = 32767, nb = 0, ws, ns = 0;
@@ -61,7 +63,7 @@ static char decode_char(const uint16_t *w)      /* w[0..8]: bar, space, bar, ...
         for (i = 0; i < 9; i++) {
             if ((c39[k].pat[i] == 'w') != wide[i]) { break; }
         }
-        if (i == 9) { return c39[k].ch; }
+        if (i == 9) { return &c39[k]; }
     }
     return 0;
 }
@@ -73,23 +75,62 @@ static bool character_gap(const uint16_t *sentinel, unsigned gap)
     return gap * 2u >= narrow && gap <= 2u * narrow;
 }
 
-static char decode29(const uint16_t *e)
+static bool payload_widths_match(const uint16_t *e, const char *pattern)
 {
-    if (decode_char(e) != '*' || decode_char(e + 20) != '*' ||
+    /* The two sentinels calibrate bar and space widths separately because
+       the optical footprint and edge thresholds affect them differently. */
+    const char *sentinel_pattern = BC_SENTINEL_PATTERN;
+    unsigned widths[2][2] = {{0}};
+    unsigned counts[2][2] = {{0}};
+    for (unsigned i = 0; i < 9; ++i) {
+        unsigned space = i % 2u;
+        bool wide = sentinel_pattern[i] == 'w';
+        widths[space][wide] += e[i] + e[20 + i];
+        counts[space][wide] += 2u;
+    }
+
+    for (unsigned i = 0; i < 9; ++i) {
+        unsigned space = i % 2u;
+        bool wide = pattern[i] == 'w';
+        unsigned measured = e[10 + i] * counts[space][wide] * 100u;
+        unsigned reference = widths[space][wide];
+        /* Rank alone can promote a stretched narrow bar and demote a
+           shortened wide bar, turning F into I or another valid symbol. */
+        unsigned minimum = wide ? 77u : 50u;
+        unsigned maximum = wide ? 140u : 160u;
+        if (measured < reference * minimum || measured > reference * maximum) return false;
+    }
+    return true;
+}
+
+static char decode29(const uint16_t *e, bool *width_rejected)
+{
+    const C39 *start = decode_char(e);
+    if (!start || start->ch != '*') return 0;
+    const C39 *end = decode_char(e + 20);
+    if (!end || end->ch != '*' ||
         !character_gap(e, e[9]) || !character_gap(e + 20, e[19])) {
         return 0;
     }
-    char letter = decode_char(e + 10);
-    return letter == '*' ? 0 : letter;
+    const C39 *letter = decode_char(e + 10);
+    if (!letter || letter->ch == '*') return 0;
+    if (!payload_widths_match(e, letter->pat)) {
+        *width_rejected = true;
+        return 0;
+    }
+    return letter->ch;
 }
 
 static char decode_any(const uint16_t *e)
 {
     uint16_t rev[BC_ELEMENTS];
-    char c = decode29(e);
+    bool width_rejected = false;
+    char c = decode29(e, &width_rejected);
     if (c != 0) { return c; }
     for (unsigned i = 0; i < BC_ELEMENTS; ++i) { rev[i] = e[BC_ELEMENTS - 1 - i]; }
-    return decode29(rev);
+    c = decode29(rev, &width_rejected);
+    if (!c && width_rejected) ++reader.width_rejects;
+    return c;
 }
 
 void barcode_reset(void)
@@ -105,7 +146,11 @@ void barcode_reset(void)
 
 BARCODE_PROGRESS barcode_progress(void)
 {
-    return (BARCODE_PROGRESS){.elements = reader.count, .in_bar = reader.in_bar};
+    return (BARCODE_PROGRESS){
+        .width_rejects = reader.width_rejects,
+        .elements = reader.count,
+        .in_bar = reader.in_bar,
+    };
 }
 
 char barcode_feed(int adc, uint32_t now_ms)

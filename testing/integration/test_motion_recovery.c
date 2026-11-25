@@ -74,7 +74,13 @@ static void check_brief_edge_touches(bool reading_barcode)
         }
     }
     for (unsigned i = 0; i < 45u; ++i) line_decide(120, 0, 920, &state, &out);
-    assert(state.curve_side == 1 && !out.stop && out.right == 0);
+    assert(state.curve_side == 1 && !out.stop);
+    if (reading_barcode) {
+        assert(out.left == S3_CRUISE_RPM && out.right == S3_CRUISE_RPM - S3_CORRECTION_STEP_RPM);
+        state.reading_barcode = false;
+        for (unsigned i = 0; i < 15u; ++i) line_decide(120, 0, 920, &state, &out);
+    }
+    assert(out.right == 0);
 }
 
 static void check_barcode_at_crawl(void)
@@ -84,6 +90,7 @@ static void check_barcode_at_crawl(void)
     LF_STATE state = {0};
     LF_CMD out;
     unsigned width = 22000u, position = 0, element = 0, edge_age = 0;
+    bool steered_left = false, steered_right = false;
     int edge_side = 1;
     char letter = 0;
     barcode_reset();
@@ -106,9 +113,14 @@ static void check_barcode_at_crawl(void)
         assert(!out.stop && !state.curve_side);
         assert(out.left >= S3_CRUISE_RPM - 2 && out.right >= S3_CRUISE_RPM - 2);
         assert(out.left - out.right <= 2 && out.right - out.left <= 2);
+        if (reading) {
+            steered_left |= out.left < out.right;
+            steered_right |= out.left > out.right;
+        }
         position += (unsigned)(out.left + out.right) * 210u * 1000u / 12000u;
     }
     assert(letter == 'F');
+    assert(steered_left && steered_right);
 }
 
 static void check_curve(int side)

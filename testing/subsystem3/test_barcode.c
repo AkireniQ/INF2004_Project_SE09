@@ -10,6 +10,7 @@ static const struct {
 } samples[] = {
     {'A', "nwnnwnwnn" "n" "wnnnnwnnw" "n" "nwnnwnwnn"},
     {'F', "nwnnwnwnn" "n" "nnwnwwnnn" "n" "nwnnwnwnn"},
+    {'I', "nwnnwnwnn" "n" "nnwnnwwnn" "n" "nwnnwnwnn"},
     {'Z', "nwnnwnwnn" "n" "nwwnwnnnn" "n" "nwnnwnwnn"},
 };
 
@@ -60,6 +61,37 @@ static void replay(const char *elements, char expected, bool reverse, unsigned s
     assert(reads == (expected && !dropout ? 1u : 0u));
 }
 
+static void check_f_width_distortion(bool reverse, bool ambiguous)
+{
+    static const unsigned widths[][9] = {
+        {130, 110, 320, 140, 300, 390, 160, 110, 110},
+        {120, 120, 360, 120, 190, 360, 270, 120, 120},
+    };
+    unsigned ends[BARCODE_FRAME_ELEMENTS + 1u] = {1400u};
+    for (unsigned i = 0; i < BARCODE_FRAME_ELEMENTS; ++i) {
+        unsigned index = reverse ? BARCODE_FRAME_ELEMENTS - 1u - i : i;
+        unsigned width = samples[1].elements[index] == 'w' ? 360u : 120u;
+        if (index >= 10u && index < 19u) width = widths[ambiguous][index - 10u];
+        ends[i + 1u] = ends[i] + width;
+    }
+
+    char letter = 0;
+    unsigned element = 0;
+    barcode_reset();
+    uint32_t rejected_before = barcode_progress().width_rejects;
+    for (uint32_t now = 0; now < ends[BARCODE_FRAME_ELEMENTS] + 200u; now += 10u) {
+        while (element <= BARCODE_FRAME_ELEMENTS && now >= ends[element]) ++element;
+        char decoded = barcode_feed(element % 2u ? 3000 : 220, now);
+        if (decoded) {
+            assert(!letter);
+            letter = decoded;
+        }
+    }
+    if (ambiguous && letter) fprintf(stderr, "Distorted F decoded as %c\n", letter);
+    assert(letter == (ambiguous ? 0 : 'F'));
+    assert(barcode_progress().width_rejects - rejected_before == (ambiguous ? 1u : 0u));
+}
+
 int main(void)
 {
     for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); ++i) {
@@ -77,5 +109,9 @@ int main(void)
     }
     replay(samples[0].elements, 0, false, 42, 0, false, 800, 860); /* Insufficient contrast. */
     replay("nnnnnnnnnnnnnnnnnnnnnnnnnnnnn", 0, false, 42, 0, false, 130, 3200);
-    puts("PASS medium A/F/Z with weak, shifted and inverted signals; low contrast and broken frames rejected");
+    for (unsigned direction = 0; direction < 2; ++direction) {
+        check_f_width_distortion(direction, false);
+        check_f_width_distortion(direction, true);
+    }
+    puts("PASS medium A/F/I/Z, variable speed and contrast, and rejection of ambiguous F/I widths");
 }

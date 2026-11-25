@@ -6,13 +6,13 @@ See `testing/README.md` for how to run tests and record results.
 
 ## Barcode serial log during driving
 
-Open the Pico USB serial port at 115200 baud, put the car on the tape before the white margin, and start a pass with the normal MQTT build. Filter for `[BC]`. The first report marks the start of line following. Reports then summarize each two-second interval's progress, with an immediate report on a decode or when line following pauses. The counts and ADC extrema are cumulative within that stretch of line following.
+Open the Pico USB serial port at 115200 baud, put the car on the tape before the white margin, and start a pass with the normal MQTT build. Filter for `[BC]`. The first report marks the start of line following. Reports then summarize each two-second interval's progress, with an immediate report on a decode, width rejection, or pause.
 
 ```text
-[BC] following GP27=205..3620 bars=15 window=29 adc_errors=0 sample_gaps=0 max_gap=10 ms decoded=F
+[BC] following GP27=205..3620 bars=15 window=29 adc_errors=0 sample_gaps=0 max_gap=10 ms width_rejects=0 decoded=F
 ```
 
-For one clean pass over a medium Code 39 label, expect 15 detected bars and a 29-element frame. `window` is the largest number of elements held in the decoder during this stretch. `adc_errors` counts failed GP27 reads, and `sample_gaps` counts intervals longer than 35 ms between valid readings. Either can break a frame. If `decoded` shows a letter, the existing `[S3] junction confirmed` log indicates that a turn was triggered at the crossing. The barcode summary is printed by a separate task and works without a broker connection once the car is following.
+For one clean pass over a medium Code 39 label, expect 15 detected bars and a 29-element frame. `window` is the largest number of elements held in the decoder during this stretch. `adc_errors` counts failed GP27 reads, and `sample_gaps` counts intervals longer than 35 ms between valid readings. Either can break a frame. `width_rejects` counts scans since boot where the letter's measured widths disagreed with the framing characters. `decoded` shows the last accepted letter during this stretch of line following. The `[S3] junction confirmed` log shows when the controller triggers a mapped turn. The barcode summary is printed by a separate task and works without a broker connection once the car is following.
 
 ## Standalone IR hardware test
 
@@ -51,7 +51,7 @@ Add a new row for every run. Never edit or delete old rows.
 
 ## Medium Code 39 regression
 
-The test replays A, F and Z from slides 3, 7 and 11 of the supplied deck. The images are placed at 250 mm wide and the printed bar pattern spans about 243 mm at actual size. Replay covers both reading directions, weak and shifted sensor signals, irregular sampling, isolated optical glitches, and incomplete frames.
+The test replays A, F and Z from slides 3, 7 and 11 of the supplied deck. The images are placed at 250 mm wide and the printed bar pattern spans about 243 mm at actual size. It also replays a valid Code 39 I at the same dimensions. Replay covers both reading directions, weak and shifted sensor signals, irregular sampling, isolated optical glitches, incomplete frames, and stretched and shortened runs that previously made F decode as I.
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror testing/subsystem3/test_barcode.c \
