@@ -83,9 +83,9 @@ static void check_brief_edge_touches(bool reading_barcode)
     assert(out.right == 0);
 }
 
-static void check_barcode_at_crawl(void)
+static void check_barcode_at_crawl(unsigned narrow_um)
 {
-    /* Medium F at the speed produced by the steering wheel targets. */
+    /* F at the speed produced by the steering wheel targets. */
     const char *pattern = "nwnnwnwnn" "n" "nnwnwwnnn" "n" "nwnnwnwnn";
     LF_STATE state = {0};
     LF_CMD out;
@@ -94,11 +94,11 @@ static void check_barcode_at_crawl(void)
     int edge_side = 1;
     char letter = 0;
     barcode_reset();
-    for (uint32_t now = 0; now < 9000u && !letter; now += 10u) {
+    for (uint32_t now = 0; now < 12000u && !letter; now += 10u) {
         while (position >= width && element < BARCODE_FRAME_ELEMENTS + 1u) {
             ++element;
             if (element <= BARCODE_FRAME_ELEMENTS)
-                width += pattern[element - 1u] == 'w' ? 15479u : 5160u;
+                width += pattern[element - 1u] == 'w' ? 3u * narrow_um : narrow_um;
         }
         bool dark = element % 2u != 0 && element <= BARCODE_FRAME_ELEMENTS;
         letter = barcode_feed(dark ? 3000 : 220, now);
@@ -272,7 +272,9 @@ int main(void)
     check_early_release();
     check_brief_edge_touches(false);
     check_brief_edge_touches(true);
-    check_barcode_at_crawl();
+    check_barcode_at_crawl(6990u);
+    check_barcode_at_crawl(5160u);
+    check_barcode_at_crawl(3509u);
     check_curve(-1);
     check_curve(1);
     check_line_drop();

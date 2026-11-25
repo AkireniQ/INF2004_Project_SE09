@@ -27,9 +27,9 @@ char barcode_feed(int adc, uint32_t now_ms);
 #define BARCODE_FRAME_ELEMENTS 29u
 #define BARCODE_MAX_SAMPLE_GAP_MS 35u
 typedef struct {
+    uint32_t bars; /* Tentative total, adjusted if the contrast is recalibrated. */
     uint32_t width_rejects;
     uint8_t elements;
-    bool in_bar;
 } BARCODE_PROGRESS;
 /* Read only from the task that feeds the decoder. */
 BARCODE_PROGRESS barcode_progress(void);

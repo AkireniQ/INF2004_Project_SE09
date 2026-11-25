@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "../../app_program/subsystem3/barcode.h"
 
-/* BARCODE (1).pptx, slides 3, 7, 11. Medium image placed at 250 mm. */
+/* BARCODE (1).pptx. Each letter has large, medium and small slides. */
 static const struct {
     char letter;
     const char *elements;
@@ -13,6 +13,60 @@ static const struct {
     {'I', "nwnnwnwnn" "n" "nnwnnwwnn" "n" "nwnnwnwnn"},
     {'Z', "nwnnwnwnn" "n" "nwwnwnnnn" "n" "nwnnwnwnn"},
 };
+
+static unsigned reflected_shade(const unsigned *bounds, unsigned position, unsigned half_spot)
+{
+    unsigned lo = position > half_spot ? position - half_spot : 0;
+    unsigned hi = position + half_spot;
+    unsigned dark = 0;
+    for (unsigned i = 0; i < BARCODE_FRAME_ELEMENTS; i += 2u) {
+        unsigned start = bounds[i] > lo ? bounds[i] : lo;
+        unsigned end = bounds[i + 1u] < hi ? bounds[i + 1u] : hi;
+        if (end > start) dark += end - start;
+    }
+    return dark * 256u / (2u * half_spot);
+}
+
+static void check_print_size(unsigned narrow_um, unsigned half_spot)
+{
+    for (unsigned letter = 0; letter < sizeof(samples) / sizeof(samples[0]); ++letter) {
+        for (unsigned reverse = 0; reverse < 2; ++reverse) {
+            unsigned bounds[BARCODE_FRAME_ELEMENTS + 1u] = {23000u};
+            for (unsigned i = 0; i < BARCODE_FRAME_ELEMENTS; ++i) {
+                unsigned j = reverse ? BARCODE_FRAME_ELEMENTS - 1u - i : i;
+                unsigned scale = samples[letter].elements[j] == 'w' ? 3u : 1u;
+                bounds[i + 1u] = bounds[i] + narrow_um * scale;
+            }
+
+            for (unsigned speed = 34; speed <= 50; speed += 8u) {
+                unsigned reads = 0;
+                uint32_t now = 0;
+                barcode_reset();
+                uint32_t initial_bars = barcode_progress().bars;
+                for (unsigned position = 0; position < bounds[BARCODE_FRAME_ELEMENTS] + 20000u; ) {
+                    /* A narrow bar or gap can sit entirely inside the sensor's
+                       footprint, so it never reaches a pure black or white. */
+                    unsigned shade = reflected_shade(bounds, position, half_spot);
+                    int adc = 220 + (int)(3280u * shade / 256u) + (int)(now / 10u % 7u) * 6 - 18;
+                    char decoded = barcode_feed(adc, now);
+                    if (decoded) {
+                        assert(decoded == samples[letter].letter);
+                        ++reads;
+                    }
+                    unsigned interval = now / 10u % 23u == 7u ? 20u : 10u;
+                    position += interval * (speed + now / 180u % 3u * 3u - 3u);
+                    now += interval;
+                }
+                if (reads != 1u) {
+                    fprintf(stderr, "narrow=%u um spot=%u um letter=%c speed=%u mm/s reverse=%u reads=%u\n",
+                            narrow_um, half_spot * 2u, samples[letter].letter, speed, reverse, reads);
+                }
+                assert(reads == 1u);
+                assert(barcode_progress().bars - initial_bars == 15u);
+            }
+        }
+    }
+}
 
 static void replay(const char *elements, char expected, bool reverse, unsigned speed,
                    unsigned phase, bool dropout, int paper, int bar)
@@ -94,6 +148,11 @@ static void check_f_width_distortion(bool reverse, bool ambiguous)
 
 int main(void)
 {
+    /* Image widths 338.67, 250.00 and 170.00 mm respectively. */
+    check_print_size(6990u, 3250u);
+    check_print_size(5160u, 3250u);
+    check_print_size(3509u, 3250u);
+    check_print_size(5160u, 4750u);
     for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); ++i) {
         for (unsigned direction = 0; direction < 2; ++direction) {
             for (unsigned speed = 30; speed <= 58; speed += 7) {
@@ -113,5 +172,5 @@ int main(void)
         check_f_width_distortion(direction, false);
         check_f_width_distortion(direction, true);
     }
-    puts("PASS medium A/F/I/Z, variable speed and contrast, and rejection of ambiguous F/I widths");
+    puts("PASS all three sizes, blurred narrow gaps, variable speed and contrast, and ambiguous F/I rejection");
 }

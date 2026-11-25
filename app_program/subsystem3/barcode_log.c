@@ -4,11 +4,11 @@
 #define BARCODE_REPORT_MS 2000u
 
 typedef struct {
-    UW bars, adc_errors, gaps, max_gap_ms, width_rejects;
+    UW bars, starting_bars, adc_errors, gaps, max_gap_ms, width_rejects;
     UW sampled_at, reported_at;
     uint16_t min_adc, max_adc;
     uint8_t max_elements;
-    bool following, has_adc, in_bar;
+    bool following, has_adc;
     char letter;
 } BARCODE_REPORT;
 
@@ -59,8 +59,8 @@ EXPORT void s3_record_barcode_sample(BOOL following, INT adc, UW now_ms, char le
     BARCODE_PROGRESS progress = barcode_progress();
     bool rejected = !first && progress.width_rejects != report.width_rejects;
     report.width_rejects = progress.width_rejects;
-    if (progress.in_bar && !report.in_bar) ++report.bars;
-    report.in_bar = progress.in_bar;
+    if (first) report.starting_bars = progress.bars;
+    report.bars = progress.bars - report.starting_bars;
     unsigned elements = letter ? BARCODE_FRAME_ELEMENTS : progress.elements;
     if (elements > report.max_elements) report.max_elements = (uint8_t)elements;
     if (letter) report.letter = letter;

@@ -9,6 +9,7 @@ typedef struct {
     unsigned errors[3];
     unsigned scans;
     unsigned bars;
+    unsigned width_rejects;
     unsigned max_gap_ms;
     UW sampled_at;
     char barcode;
@@ -23,7 +24,6 @@ LOCAL void ir_bench_sample_task(INT stacd, void *exinf)
     (void)stacd;
     (void)exinf;
     IR_BENCH_SAMPLE sample = {0};
-    BOOL was_bar = FALSE;
 
     for (;;) {
         for (INT channel = 0; channel < 3; ++channel) {
@@ -39,9 +39,9 @@ LOCAL void ir_bench_sample_task(INT stacd, void *exinf)
         sample.sampled_at = now.lo;
         char letter = barcode_feed(sample.raw[1], sample.sampled_at);
         if (letter) sample.barcode = letter;
-        BOOL in_bar = barcode_progress().in_bar;
-        if (in_bar && !was_bar) ++sample.bars;
-        was_bar = in_bar;
+        BARCODE_PROGRESS progress = barcode_progress();
+        sample.bars = progress.bars;
+        sample.width_rejects = progress.width_rejects;
         ++sample.scans;
 
         if (tk_loc_mtx(sample_guard, TMO_FEVR) == E_OK) {
@@ -76,11 +76,12 @@ EXPORT void ir_bench_run(void)
         unsigned active = __atomic_load_n(&reading_gpio, __ATOMIC_RELAXED);
         if (sample.scans) {
             tm_printf((UB *)"[IR] scan=%u age=%u ms L(GP26)=%d C(GP27)=%d R(GP28)=%d "
-                            "errors L/C/R=%u/%u/%u adc_gp=%u bars=%u max_gap=%u ms barcode=%c\n",
+                            "errors L/C/R=%u/%u/%u adc_gp=%u bars=%u max_gap=%u ms "
+                            "width_rejects=%u barcode=%c\n",
                       sample.scans, (unsigned)(now.lo - sample.sampled_at),
                       sample.raw[0], sample.raw[1], sample.raw[2],
                       sample.errors[0], sample.errors[1], sample.errors[2], active,
-                      sample.bars, sample.max_gap_ms,
+                      sample.bars, sample.max_gap_ms, sample.width_rejects,
                       sample.barcode ? sample.barcode : '-');
         } else {
             tm_printf((UB *)"[IR] Waiting for first ADC scan (adc_gp=%u)\n", active);
