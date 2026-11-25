@@ -1,8 +1,8 @@
 #include "line_steering.h"
 
 #define WIDE_MARKING_DARKNESS 800
-#define STRAIGHT_ENTER 205
-#define STRAIGHT_RELEASE 110
+#define STRAIGHT_ENTER 80
+#define STRAIGHT_RELEASE 50
 #define CURVE_DARKNESS 350
 #define CURVE_IMBALANCE 315
 #define CURVE_CONFIRM_SAMPLES 8
@@ -11,8 +11,9 @@
 #define CURVE_RECENTER_SAMPLES 2
 #define CURVE_EXIT_CONFIRM_SAMPLES 24
 #define SHORT_GAP_SAMPLES 10
-#define NEUTRAL_SAMPLES 8
-#define CURVE_EXIT_NEUTRAL_SAMPLES 14
+#define NEUTRAL_SAMPLES 4
+#define CURVE_EXIT_NEUTRAL_SAMPLES 4
+
 
 static int absolute(int value)
 {
@@ -54,19 +55,20 @@ static int track_demand(LF_STATE *state, int error, bool light)
         return 0;
     }
     int previous = state->filtered_error;
-    state->filtered_error += (int16_t)((error - previous) / 4);
+    state->filtered_error += (int16_t)((error - previous) / 2);
     int magnitude = absolute(state->filtered_error);
     int side = state->filtered_error < 0 ? -1 : 1;
     bool already_steering = state->correction_rpm * side > 0;
     int trend = (state->filtered_error - previous) * side;
     if (already_steering && trend < 0) {
         /* Release the trim early when the edge is already coming back. */
-        magnitude += 3 * trend;
+        magnitude += 6 * trend;
     }
-    int threshold = already_steering ? STRAIGHT_RELEASE : STRAIGHT_ENTER;
+    int enter = state->settle_samples ? 2 * STRAIGHT_ENTER : STRAIGHT_ENTER;
+    int threshold = already_steering ? STRAIGHT_RELEASE : enter;
     if (magnitude < threshold) { return 0; }
     if (!already_steering &&
-        (previous * side < STRAIGHT_ENTER || error * side < STRAIGHT_RELEASE)) {
+        (previous * side < enter || error * side < STRAIGHT_RELEASE)) {
         return 0;
     }
     return side * S3_CORRECTION_STEP_RPM;
@@ -95,6 +97,10 @@ static int curve_demand(LF_STATE *state, int error, int strong_side, bool light)
     if (side * error < 120) {
         if (++state->centered_samples >= CURVE_RECENTER_SAMPLES) {
             finish_curve(state);
+
+            /* Stop carrying the old turn command into straight tracking. */
+            state->correction_rpm = 0;
+            state->slew_hold = false;
         }
         return 0;
     }
