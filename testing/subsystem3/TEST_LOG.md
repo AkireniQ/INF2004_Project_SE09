@@ -4,6 +4,16 @@
 
 See `testing/README.md` for how to run tests and record results.
 
+## Barcode serial log during driving
+
+Open the Pico USB serial port at 115200 baud, put the car on the tape before the white margin, and start a pass with the normal MQTT build. Filter for `[BC]`. The first report marks the start of line following. Reports then summarize each two-second interval's progress, with an immediate report on a decode or when line following pauses. The counts and ADC extrema are cumulative within that stretch of line following.
+
+```text
+[BC] following GP27=205..3620 bars=15 window=29 adc_errors=0 sample_gaps=0 max_gap=10 ms decoded=F
+```
+
+For one clean pass over a medium Code 39 label, expect 15 detected bars and a 29-element frame. `window` is the largest number of elements held in the decoder during this stretch. `adc_errors` counts failed GP27 reads, and `sample_gaps` counts intervals longer than 35 ms between valid readings. Either can break a frame. If `decoded` shows a letter, the existing `[S3] junction confirmed` log indicates that a turn was triggered at the crossing. The barcode summary is printed by a separate task and works without a broker connection once the car is following.
+
 ## Standalone IR hardware test
 
 Build from the repository root with:

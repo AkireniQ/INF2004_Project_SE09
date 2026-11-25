@@ -24,5 +24,10 @@ static inline bool barcode_map_valid(BARCODE_MAP map)
 void barcode_reset(void);
 /* Feed a timed darkness sample. Returns a letter once per complete frame. */
 char barcode_feed(int darkness, uint32_t now_ms);
+#define BARCODE_FRAME_ELEMENTS 29u
+#define BARCODE_MAX_SAMPLE_GAP_MS 35u
+typedef struct { uint8_t elements; bool in_bar; } BARCODE_PROGRESS;
+/* Read only from the task that feeds the decoder. */
+BARCODE_PROGRESS barcode_progress(void);
 
 #endif

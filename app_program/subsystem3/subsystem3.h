@@ -28,9 +28,10 @@ IMPORT BOOL s3_motion_turn(INT dir, INT steps);   /* dir < 0 = left, > 0 = right
 
 
 IMPORT INT  ir_read(INT ch);
-IMPORT ER   line_sense(INT *l, INT *c, INT *r);
 IMPORT void line_follow_task(INT stacd, void *exinf);
 IMPORT void s3_log_sampler_state(void);
+IMPORT void s3_barcode_log_task(INT stacd, void *exinf);
+IMPORT void s3_record_barcode_sample(BOOL following, INT adc, UW now_ms, char letter);
 #if APP_IR_BENCH
 IMPORT void ir_bench_run(void);
 #endif

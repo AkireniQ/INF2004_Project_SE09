@@ -3,8 +3,7 @@
 
 #define BC_TH_HIGH 600
 #define BC_TH_LOW 400
-#define BC_ELEMENTS 29
-#define BC_MAX_GAP_MS 35u
+#define BC_ELEMENTS BARCODE_FRAME_ELEMENTS
 #define BC_MIN_RUN_MS 15u
 #define BC_MAX_RUN_MS 1100u
 
@@ -97,9 +96,14 @@ void barcode_reset(void)
     reader.count = 0;
 }
 
+BARCODE_PROGRESS barcode_progress(void)
+{
+    return (BARCODE_PROGRESS){.elements = reader.count, .in_bar = reader.in_bar};
+}
+
 char barcode_feed(int darkness, uint32_t now_ms)
 {
-    if (!reader.sampled || now_ms - reader.sampled_at > BC_MAX_GAP_MS) {
+    if (!reader.sampled || now_ms - reader.sampled_at > BARCODE_MAX_SAMPLE_GAP_MS) {
         barcode_reset();
         reader.sampled = true;
         reader.run_at = now_ms;
