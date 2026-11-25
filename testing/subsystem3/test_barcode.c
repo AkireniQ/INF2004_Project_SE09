@@ -130,12 +130,14 @@ static void check_f_width_distortion(bool reverse, bool ambiguous)
     }
 
     char letter = 0;
+    unsigned misses = 0;
     unsigned element = 0;
     barcode_reset();
     uint32_t rejected_before = barcode_progress().width_rejects;
     for (uint32_t now = 0; now < ends[BARCODE_FRAME_ELEMENTS] + 200u; now += 10u) {
         while (element <= BARCODE_FRAME_ELEMENTS && now >= ends[element]) ++element;
         char decoded = barcode_feed(element % 2u ? 3000 : 220, now);
+        if (barcode_progress().scan == BARCODE_SCAN_MISSED) ++misses;
         if (decoded) {
             assert(!letter);
             letter = decoded;
@@ -144,6 +146,26 @@ static void check_f_width_distortion(bool reverse, bool ambiguous)
     if (ambiguous && letter) fprintf(stderr, "Distorted F decoded as %c\n", letter);
     assert(letter == (ambiguous ? 0 : 'F'));
     assert(barcode_progress().width_rejects - rejected_before == (ambiguous ? 1u : 0u));
+    assert(misses == (ambiguous ? 1u : 0u));
+}
+
+static void check_incomplete_scan(unsigned elements, bool reverse)
+{
+    uint32_t edge = 1500u;
+    unsigned index = 0;
+    unsigned misses = 0;
+    barcode_reset();
+    for (uint32_t now = 0; now < 5400u; now += 10u) {
+        if (index < elements && now == edge) {
+            char width = samples[3].elements[reverse ? BARCODE_FRAME_ELEMENTS - 1u - index : index];
+            edge += width == 'w' ? 360u : 120u;
+            ++index;
+        }
+        bool dark = index % 2u && now < edge;
+        assert(!barcode_feed(dark ? 3000 : 220, now));
+        if (barcode_progress().scan == BARCODE_SCAN_MISSED) ++misses;
+    }
+    assert(misses == (elements >= 11u ? 1u : 0u));
 }
 
 int main(void)
@@ -171,6 +193,9 @@ int main(void)
     for (unsigned direction = 0; direction < 2; ++direction) {
         check_f_width_distortion(direction, false);
         check_f_width_distortion(direction, true);
+        check_incomplete_scan(1u, direction); /* A lone tape stripe. */
+        check_incomplete_scan(9u, direction); /* A marker without payload. */
+        check_incomplete_scan(13u, direction);
     }
     puts("PASS all three sizes, blurred narrow gaps, variable speed and contrast, and ambiguous F/I rejection");
 }

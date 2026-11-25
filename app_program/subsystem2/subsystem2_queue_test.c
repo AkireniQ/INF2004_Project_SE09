@@ -45,9 +45,9 @@ static void transport_tests(void)
 {
     S2_STATUS fake={{0}};
     empty_transport();
-    s2_publish(&fake,false);
+    s2_publish(&fake,false,(S2_TRAVEL){0});
     check("Q1 commands rejected before ready",!motion_forward());
-    s2_publish(&fake,true); /* Fake readiness only; NO motor task or outputs involved. */
+    s2_publish(&fake,true,(S2_TRAVEL){0}); /* Fake readiness only; NO motor task or outputs involved. */
 
     const unsigned levels[]={1,2,3};
     bool ok=true;
@@ -104,10 +104,10 @@ static void transport_tests(void)
     s2_record_result(false);empty_transport();
 
     s2_put_bits(&fake,9,9,123);s2_put_bits(&fake,18,9,124);
-    s2_publish(&fake,true);
+    s2_publish(&fake,true,(S2_TRAVEL){0});
     S2_STATUS readback;
     check("Q15 status snapshot round trip",motion_get_status(&readback)&&s2_get_bits(&readback,9,9)==123&&s2_get_bits(&readback,18,9)==124);
-    fake=(S2_STATUS){{0}};s2_publish(&fake,false); /* Leave module NOT ready. */
+    fake=(S2_STATUS){{0}};s2_publish(&fake,false,(S2_TRAVEL){0}); /* Leave module NOT ready. */
 }
 static void probe(unsigned tag)
 {

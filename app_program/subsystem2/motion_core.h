@@ -31,6 +31,7 @@ bool s2_core_busy(void);
 unsigned s2_core_faults(void);
 bool s2_core_clear_faults(void); /* Only after checking the cause. Never auto-resumes. */
 void s2_core_snapshot(S2_STATUS *out);
+S2_TRAVEL s2_core_travel(void); /* Motion owner only. */
 void s2_core_timeout(void);
 uint32_t s2_core_timing_fault_gap_us(void); /* Latched diagnostic, does not drive motors. */
 #endif

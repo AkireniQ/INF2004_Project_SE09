@@ -14,6 +14,8 @@ Open the Pico USB serial port at 115200 baud, put the car on the tape before the
 
 For one clean pass over a Code 39 label, expect 15 detected bars and a 29-element frame at any print size. The bar count can be revised when the decoder recalibrates from a stronger bar. `window` is the largest number of elements held in the decoder during this stretch. `adc_errors` counts failed GP27 reads, and `sample_gaps` counts intervals longer than 35 ms between valid readings. Either can break a frame. `width_rejects` counts scans since boot where the letter's measured widths disagreed with the framing characters. `decoded` shows the last accepted letter during this stretch of line following. The `[S3] junction confirmed` log shows when the controller triggers a mapped turn. The barcode summary is printed by a separate task and works without a broker connection once the car is following.
 
+During driving, a recognized scan that fails can trigger one straight reverse and a second forward pass. The controller uses the distance already traveled, adds a 10 mm margin for the leading white area, and caps the reverse at 420 mm. It only retries on a measured straight approach. Look for `[S3] barcode missed, backing up` in serial and `RETRY BARCODE` on the dashboard.
+
 ## Standalone IR hardware test
 
 Build from the repository root with:

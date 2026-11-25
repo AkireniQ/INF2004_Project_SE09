@@ -33,11 +33,11 @@ static struct {
     uint32_t committed_bars, bars, width_rejects;
     uint16_t widths[BC_ELEMENTS];
     int white_level;
-    uint16_t reference_peak, observed_peak, prefix_count;
+    uint16_t reference_peak, observed_peak, prefix_count, frame_gap_ms;
     int16_t first_contrast, previous_contrast;
     int8_t polarity, first_polarity;
-    uint8_t count;
-    bool sampled, in_bar, edge_pending, have_edge;
+    uint8_t count, missed_count;
+    bool sampled, in_bar, edge_pending, have_edge, decoded, missed;
 } reader;
 
 static const C39 *decode_char(const uint16_t *w)  /* w[0..8]: bar, space, bar, ... */
@@ -142,6 +142,16 @@ static char decode_any(const uint16_t *e)
     return c;
 }
 
+static bool starts_with_marker(const uint16_t *e)
+{
+    const C39 *symbol = decode_char(e);
+    if (symbol && symbol->ch == '*') return true;
+    uint16_t reverse[9];
+    for (unsigned i = 0; i < 9u; ++i) reverse[i] = e[8u - i];
+    symbol = decode_char(reverse);
+    return symbol && symbol->ch == '*';
+}
+
 static void reset_edges(uint32_t now_ms)
 {
     reader.edge_sampled_at = now_ms;
@@ -150,6 +160,7 @@ static void reset_edges(uint32_t now_ms)
     reader.edge_pending = false;
     reader.have_edge = false;
     reader.count = 0;
+    reader.frame_gap_ms = 0;
     reader.previous_contrast = 0;
 }
 
@@ -162,6 +173,7 @@ void barcode_reset(void)
     reader.prefix_count = 0;
     reader.reference_peak = 0;
     reader.observed_peak = 0;
+    reader.decoded = reader.missed = false;
     reset_edges(0);
 }
 
@@ -170,7 +182,9 @@ BARCODE_PROGRESS barcode_progress(void)
     return (BARCODE_PROGRESS){
         .bars = reader.committed_bars + reader.bars,
         .width_rejects = reader.width_rejects,
-        .elements = reader.count,
+        .elements = reader.missed ? reader.missed_count : reader.count,
+        .scan = reader.missed ? BARCODE_SCAN_MISSED :
+                reader.polarity && !reader.decoded ? BARCODE_SCAN_ACTIVE : BARCODE_SCAN_IDLE,
     };
 }
 
@@ -222,6 +236,13 @@ static char track_edge(int contrast, uint32_t now_ms)
         --reader.count;
     }
     reader.widths[reader.count++] = (uint16_t)width;
+    if (ended_bar && reader.count == 9u && starts_with_marker(reader.widths)) {
+        unsigned widest_space = 0;
+        for (unsigned i = 1; i < 9u; i += 2u)
+            if (reader.widths[i] > widest_space) widest_space = reader.widths[i];
+        unsigned idle_ms = widest_space * 3u / 2u + BARCODE_MAX_SAMPLE_GAP_MS;
+        reader.frame_gap_ms = (uint16_t)(idle_ms < BC_MAX_RUN_MS ? idle_ms : BC_MAX_RUN_MS);
+    }
     if (!ended_bar || reader.count != BC_ELEMENTS) return 0;
     char letter = decode_any(reader.widths);
     if (letter) reader.count = 0;
@@ -260,12 +281,31 @@ static char track_sample(int contrast, uint32_t now_ms)
     return track_edge(contrast, now_ms);
 }
 
+static void miss_scan(void)
+{
+    reader.missed_count = reader.count;
+    barcode_reset();
+    reader.missed = true;
+}
+
 char barcode_feed(int adc, uint32_t now_ms)
 {
     /* A missing reading is neither black nor white. The next timestamp
        decides whether the gap was short enough to preserve this frame. */
+    reader.missed = false;
     if (adc < 0 || adc > 4095) return 0;
-    if (!reader.sampled || now_ms - reader.sampled_at > BARCODE_MAX_SAMPLE_GAP_MS ||
+    bool late = reader.sampled && now_ms - reader.sampled_at > BARCODE_MAX_SAMPLE_GAP_MS;
+    bool in_frame = !reader.decoded && reader.frame_gap_ms && reader.count >= 11u;
+    bool long_blank = !reader.in_bar && !reader.edge_pending &&
+        now_ms - reader.run_at > reader.frame_gap_ms &&
+        reader.polarity * (adc - reader.white_level / BC_WHITE_FILTER) < reader.reference_peak / 2;
+    if (in_frame && (late || long_blank)) {
+        /* Require a start marker and part of a payload before declaring a
+           scan broken by a sample dropout or blank longer than a wide gap. */
+        miss_scan();
+        return 0;
+    }
+    if (!reader.sampled || late ||
         (reader.polarity && !reader.edge_pending && now_ms - reader.run_at > BC_MAX_RUN_MS)) {
         barcode_reset();
         reader.sampled = true;
@@ -300,7 +340,13 @@ char barcode_feed(int adc, uint32_t now_ms)
         (void)track_edge(reader.first_contrast, reader.first_at);
     }
 
+    uint32_t rejected = reader.width_rejects;
     char letter = track_sample(reader.polarity * delta, now_ms);
-    if (letter) reader.prefix_count = BC_PREFIX_SAMPLES;
+    if (letter) {
+        reader.prefix_count = BC_PREFIX_SAMPLES;
+        reader.decoded = true;
+    } else if (!reader.decoded && reader.width_rejects != rejected) {
+        miss_scan();
+    }
     return letter;
 }

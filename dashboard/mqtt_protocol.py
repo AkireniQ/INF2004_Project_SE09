@@ -1,5 +1,5 @@
 """Pico binary-v2 wire format. No dependency on the firmware or MQTT client."""
-STATES = ('IDLE', 'FOLLOW_LINE', 'TURNING', 'AVOIDING', 'RECOVER_LINE', 'FAULT')
+STATES = ('IDLE', 'FOLLOW_LINE', 'TURNING', 'AVOIDING', 'RECOVER_LINE', 'FAULT', 'RETRY_BARCODE')
 MOTOR_MODES = ('IDLE', 'VELOCITY', 'DISTANCE', 'TURN')
 MOTOR_FAULTS = ((1, 'Encoder counts'), (2, 'Control timing'), (4, 'Wheel stalled'), (8, 'Command timeout'))
 VEHICLE_FAULTS = ((1, 'Motor'), (2, 'Encoder'), (4, 'IMU'), (8, 'Ultrasonic echo'), (16, 'Wi-Fi'))

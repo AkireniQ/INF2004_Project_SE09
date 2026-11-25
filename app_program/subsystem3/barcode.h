@@ -26,10 +26,12 @@ void barcode_reset(void);
 char barcode_feed(int adc, uint32_t now_ms);
 #define BARCODE_FRAME_ELEMENTS 29u
 #define BARCODE_MAX_SAMPLE_GAP_MS 35u
+typedef enum { BARCODE_SCAN_IDLE, BARCODE_SCAN_ACTIVE, BARCODE_SCAN_MISSED } BARCODE_SCAN;
 typedef struct {
     uint32_t bars; /* Tentative total, adjusted if the contrast is recalibrated. */
     uint32_t width_rejects;
     uint8_t elements;
+    BARCODE_SCAN scan;
 } BARCODE_PROGRESS;
 /* Read only from the task that feeds the decoder. */
 BARCODE_PROGRESS barcode_progress(void);

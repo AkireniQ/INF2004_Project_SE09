@@ -3,6 +3,7 @@
 /* Includes the motion owner's 200 ms direction-settling guard. */
 #define VC_JUNCTION_SETTLE_MS 230u
 #define VC_JUNCTION_TIMEOUT_MS 8000u
+#define VC_BARCODE_RETRY_TIMEOUT_MS 14000u
 
 bool vc_core_detouring(const VC_MODEL *model)
 {
@@ -12,12 +13,14 @@ bool vc_core_detouring(const VC_MODEL *model)
 bool vc_core_running(const VC_MODEL *model)
 {
     return model->state == VC_FOLLOW_LINE || model->state == VC_TURNING ||
+           model->state == VC_RETRY_BARCODE ||
            vc_core_detouring(model);
 }
 
 bool vc_core_needs_line(const VC_MODEL *model)
 {
-    if (model->state == VC_FOLLOW_LINE || model->state == VC_TURNING) return true;
+    if (model->state == VC_FOLLOW_LINE || model->state == VC_TURNING ||
+        model->state == VC_RETRY_BARCODE) return true;
     S5_PHASE phase = model->avoidance.phase;
     return vc_core_detouring(model) &&
            (phase == S5_BACK_UP || phase == S5_FIND_LINE || phase == S5_CHECK_LINE);
@@ -144,6 +147,27 @@ static void junction_step(VC_MODEL *m, const VC_INPUT *in, VC_OUTPUT *out)
     }
 }
 
+static void barcode_retry_step(VC_MODEL *m, const VC_INPUT *in, VC_OUTPUT *out)
+{
+    const S5_AVOID_INPUT *sensors = &in->avoidance;
+    unsigned elapsed = sensors->now - m->barcode_retry.phase_at;
+    if (in->obstacle_blocked) {
+        halt(m, in, VC_FAULT, VC_REASON_OBSTACLE);
+    } else if (sensors->motion == S5_MOTION_FAILED || elapsed > VC_BARCODE_RETRY_TIMEOUT_MS) {
+        halt(m, in, VC_FAULT, VC_REASON_MOTOR);
+    } else if (m->barcode_retry.settling) {
+        if (sensors->stopped && elapsed >= VC_JUNCTION_SETTLE_MS) m->state = VC_FOLLOW_LINE;
+    } else if (sensors->motion == S5_MOTION_DONE) {
+        m->barcode_retry.settling = true;
+        m->barcode_retry.phase_at = sensors->now;
+    } else if (sensors->motion != S5_MOTION_NONE) {
+        out->stop = false;
+    } else if (sensors->stopped && elapsed >= VC_JUNCTION_SETTLE_MS) {
+        out->maneuver = (S5_AVOID_OUTPUT){.action = S5_REVERSE, .distance_mm = m->barcode_retry.distance_mm};
+        out->stop = false;
+    }
+}
+
 void vc_core_step(VC_MODEL *m, const VC_INPUT *in, VC_OUTPUT *out)
 {
     *out = (VC_OUTPUT){.stop = true};
@@ -170,6 +194,11 @@ void vc_core_step(VC_MODEL *m, const VC_INPUT *in, VC_OUTPUT *out)
         return;
     }
     if (in->line_stop) { halt(m, in, VC_IDLE, VC_REASON_LINE_STOP); return; }
+
+    if (m->state == VC_RETRY_BARCODE) {
+        barcode_retry_step(m, in, out);
+        return;
+    }
 
     if (m->state == VC_TURNING) {
         if (in->obstacle_blocked && in->avoidance.range_valid) {
@@ -212,6 +241,14 @@ void vc_core_step(VC_MODEL *m, const VC_INPUT *in, VC_OUTPUT *out)
         m->junction.right = in->barcode_turn != VC_NAV_LEFT;
         m->junction.uturn = in->barcode_turn == VC_NAV_UTURN;
         junction_phase(m, VC_JUNCTION_ADVANCE, in);
+        return;
+    }
+
+    if (in->barcode_retry_mm && in->barcode_retry_mm <= VC_BARCODE_REVERSE_MAX_MM) {
+        m->barcode_retry.phase_at = in->avoidance.now;
+        m->barcode_retry.distance_mm = in->barcode_retry_mm;
+        m->barcode_retry.settling = false;
+        m->state = VC_RETRY_BARCODE;
         return;
     }
 

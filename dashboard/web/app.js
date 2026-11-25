@@ -244,7 +244,8 @@ function drawTelemetry(data) {
     FOLLOW_LINE: "Controller is applying line-following recommendations.",
     FAULT: "Controller has stopped on a fault. Inspect the readings before restarting.",
     TURNING: "Navigating a barcode junction and checking the branch tape.", AVOIDING: "An avoidance mission state was reported.",
-    RECOVER_LINE: "A line-recovery mission state was reported."
+    RECOVER_LINE: "A line-recovery mission state was reported.",
+    RETRY_BARCODE: "Backing up in a straight line for one more barcode read."
   };
   const stopped = vehicle?.state === "IDLE" || vehicle?.state === "FAULT";
   const stopReason = stopped && diagnostic?.fresh && controller.state === vehicle.state
