@@ -1,8 +1,8 @@
 #include "barcode.h"
 #include <stdbool.h>
 
-#define BC_TH_HIGH 600
-#define BC_TH_LOW 400
+#define BC_MIN_CONTRAST 160
+#define BC_WHITE_FILTER 16
 #define BC_ELEMENTS BARCODE_FRAME_ELEMENTS
 #define BC_MIN_RUN_MS 15u
 #define BC_MAX_RUN_MS 1100u
@@ -21,6 +21,10 @@ static const C39 c39[] = {
 static struct {
     uint32_t sampled_at, run_at, edge_at;
     uint16_t widths[BC_ELEMENTS];
+    int white_level;
+    uint16_t bar_peak;
+    int16_t previous_contrast;
+    int8_t polarity, edge_side;
     uint8_t count;
     bool sampled, in_bar, edge_pending;
 } reader;
@@ -94,6 +98,9 @@ void barcode_reset(void)
     reader.in_bar = false;
     reader.edge_pending = false;
     reader.count = 0;
+    reader.polarity = 0;
+    reader.bar_peak = 0;
+    reader.previous_contrast = 0;
 }
 
 BARCODE_PROGRESS barcode_progress(void)
@@ -101,24 +108,51 @@ BARCODE_PROGRESS barcode_progress(void)
     return (BARCODE_PROGRESS){.elements = reader.count, .in_bar = reader.in_bar};
 }
 
-char barcode_feed(int darkness, uint32_t now_ms)
+char barcode_feed(int adc, uint32_t now_ms)
 {
-    if (!reader.sampled || now_ms - reader.sampled_at > BARCODE_MAX_SAMPLE_GAP_MS) {
+    /* A missing reading is neither black nor white. The next timestamp
+       decides whether the gap was short enough to preserve this frame. */
+    if (adc < 0 || adc > 4095) return 0;
+    if (!reader.sampled || now_ms - reader.sampled_at > BARCODE_MAX_SAMPLE_GAP_MS ||
+        (reader.in_bar && !reader.edge_pending && now_ms - reader.run_at > BC_MAX_RUN_MS)) {
         barcode_reset();
         reader.sampled = true;
         reader.run_at = now_ms;
+        reader.white_level = adc * BC_WHITE_FILTER;
     }
     reader.sampled_at = now_ms;
 
-    bool crossed = reader.in_bar ? darkness < BC_TH_LOW : darkness > BC_TH_HIGH;
+    if (!reader.in_bar && !reader.edge_pending && now_ms - reader.run_at > BC_MAX_RUN_MS) {
+        /* A new label can be on paper with a different reflectance. */
+        reader.polarity = 0;
+        reader.bar_peak = 0;
+        reader.count = 0;
+    }
+
+    int delta = adc - reader.white_level / BC_WHITE_FILTER;
+    int side = reader.polarity;
+    if (!side) side = delta < 0 ? -1 : 1;
+    int contrast = side * delta;
+    int threshold = reader.in_bar ? reader.bar_peak * 2 / 5 : reader.bar_peak / 4;
+    int minimum = reader.in_bar ? BC_MIN_CONTRAST / 2 : BC_MIN_CONTRAST;
+    if (threshold < minimum) threshold = minimum;
+    bool crossed = reader.in_bar ? contrast <= threshold : contrast >= threshold;
+    /* Only use peaks supported by two readings, so a spike doesn't move
+       the threshold for the rest of the bar. */
+    int supported = contrast < reader.previous_contrast ? contrast : reader.previous_contrast;
+    reader.previous_contrast = (int16_t)contrast;
     if (!crossed) {
         reader.edge_pending = false;
+        if (!reader.in_bar) reader.white_level += delta;
+        else if (supported > reader.bar_peak) reader.bar_peak = (uint16_t)supported;
         return 0;
     }
     /* Timestamp the first sample of a confirmed edge. One bad sample
        within a bar or space does not split its width. */
-    if (!reader.edge_pending) {
+    if (!reader.edge_pending || reader.edge_side != side) {
         reader.edge_at = now_ms;
+        reader.edge_side = (int8_t)side;
+        reader.previous_contrast = (int16_t)contrast;
         reader.edge_pending = true;
         return 0;
     }
@@ -128,6 +162,10 @@ char barcode_feed(int darkness, uint32_t now_ms)
     reader.run_at = reader.edge_at;
     reader.in_bar = !ended_bar;
     reader.edge_pending = false;
+    if (!ended_bar) {
+        reader.polarity = (int8_t)side;
+        reader.bar_peak = (uint16_t)supported;
+    }
     if (width < BC_MIN_RUN_MS || width > BC_MAX_RUN_MS) {
         reader.count = 0;
         return 0;

@@ -26,6 +26,8 @@ Flash `mtk3pico_smp1_usb_cdc_irbench.uf2` using BOOTSEL. Open the Pico USB seria
 
 Hold the sensors at their normal height above white paper. Slide black tape under each sensor in turn for a few seconds. Its raw value should change clearly between white and black. Compare at the same height. Check that scan numbers keep rising and cumulative error counts stay at zero. A value of -1 is a read error. If the scan number freezes while age grows, `adc_gp` shows the last active ADC input while it is being read, or 0 between reads. If the scan number keeps rising but one channel's value barely changes, check that sensor's analog output and ground connection.
 
+Start with white paper under GP27. Slide the medium barcode so the sensor crosses every bar and both white margins. Use a steady pace of about six seconds across the full pattern. Compare `bars=` before and after the pass. A complete label has 15 black bars. The serial `barcode=` field shows the last decoded letter and `max_gap=` shows the longest sample gap since boot. This test uses the driving firmware's decoder and works with the motors off.
+
 Flash the normal MQTT UF2 again to restore dashboard control and driving.
 
 ## Test cases
@@ -49,7 +51,7 @@ Add a new row for every run. Never edit or delete old rows.
 
 ## Medium Code 39 regression
 
-The test replays A, F and Z from slides 3, 7 and 11 of the supplied deck. The images are placed at 250 mm wide and the printed bar pattern spans about 243 mm at actual size. Replay covers both reading directions, irregular sample intervals, isolated optical glitches, and discarding incomplete frames.
+The test replays A, F and Z from slides 3, 7 and 11 of the supplied deck. The images are placed at 250 mm wide and the printed bar pattern spans about 243 mm at actual size. Replay covers both reading directions, weak and shifted sensor signals, irregular sampling, isolated optical glitches, and incomplete frames.
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror testing/subsystem3/test_barcode.c \
