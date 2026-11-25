@@ -16,6 +16,8 @@ The slower line-following regression adds straight-line noise, a one-sample refl
 
 The wheel matching regression adds a neutral interval before opposite steering, and tests the production motor core against phase-shifted encoder pulses, unequal wheel drag, a stopped inside wheel, bounded turns, and a stalled motor.
 
+The crawl load test interrupts a single wheel's encoder pulses until PWM exceeds the normal crawl cap. It then checks that the assist fades after motion resumes at the same RPM target and that a wheel that remains blocked still faults.
+
 The steering regression also checks that a short opposite edge after a sustained bend produces a smaller correction and that a persistent opposite edge can still start a second bend.
 
 ```sh

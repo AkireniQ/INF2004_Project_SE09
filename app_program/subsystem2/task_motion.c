@@ -34,6 +34,7 @@ static bool execute(uint16_t word)
     case S2_CLEAR:return s2_core_clear_faults();
     case S2_MANEUVER:return s2_core_maneuver(arg);
     case S2_ARC:return arg<=1 && s2_core_arc(arg!=0);
+    case S2_CRAWL_PIVOT:return s2_core_crawl_pivot(arg >> 1, (arg & 1u) != 0);
     default:return false;
     }
 }
@@ -93,7 +94,8 @@ EXPORT void motion_control_task(INT stacd,void *exinf)
             uint32_t received=s2_now_ms();age=(uint32_t)(received-issued);
             bool fresh=age<=S2_COMMAND_TTL_MS;
             bool starts=op==S2_FORWARD||op==S2_BACKWARD||op==S2_WHEELS||op==S2_WHEEL_RPM||
-                        op==S2_MOVE_F||op==S2_MOVE_B||op==S2_LEFT||op==S2_RIGHT||op==S2_MANEUVER||op==S2_ARC;
+                        op==S2_MOVE_F||op==S2_MOVE_B||op==S2_LEFT||op==S2_RIGHT||
+                        op==S2_MANEUVER||op==S2_ARC||op==S2_CRAWL_PIVOT;
             bool settled=!starts || s2_core_busy() || !settling_active;
             /* Requests during settling are rejected, never silently replayed later. */
             if(!fresh)reason=S2_REPLY_STALE;

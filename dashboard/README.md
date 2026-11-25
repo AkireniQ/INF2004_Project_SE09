@@ -28,7 +28,7 @@ The Pico must run the MQTT firmware (`make NET=lwip MQTT=1`), not the normal non
 - **Connection:** live heartbeat age, Wi-Fi/broker/subscription flags and bridge drop flags.
 - **Commands/events:** exact binary START/STOP, Pico acknowledgment and a bounded connection/mission/fault event list.
 
-All values come from received MQTT payloads. In the motion recovery firmware the outer IR channels steer, and the centre ADC channel reads the barcode. The dashboard displays the latest decoded A–D barcode. The terrain and obstacle cards show **No data** until a producer submits a valid measurement.
+All values come from received MQTT payloads. The outer IR channels steer and the dedicated GP27 ADC channel reads barcodes. The dashboard displays the latest decoded A–Z barcode. The terrain and obstacle cards show **No data** until a producer submits a valid measurement.
 
 The matching diagnostics firmware additionally publishes normalized IR darkness, target RPM, controller stop reason and telemetry-drop count on `/controller`. Older firmware does not publish these fields. Raw ADC values, tilt, turn rate and total distance remain unavailable. Wheel progress is counts for bounded moves, not cumulative distance. The global speed level is a legacy selection, not the per-wheel fine-RPM target. A displayed mission state reports controller intent; actual wheel RPM reports measured motion.
 
@@ -53,7 +53,7 @@ Subscriptions use the configured root and these suffixes:
 | `ack` |1| START in bit0, RESET in bit2 (neither means STOP); rejected in bit1 |
 | `vehicle` |1| state bits0..2, fault mask bits3..7 |
 | `motion` |9| S2_STATUS packed bits: mode0:2, level2:3, faults5:4, L RPM9:9, R RPM18:9, L PWM27:7, R PWM34:7, L progress41:13, R progress54:13 |
-| `line` |1| L/C/R black bits0/1/2, barcode bits3..5 |
+| `line` |1| L/C/R black bits0/1/2, barcode bits3..7 (0 none, 1–26 A–Z) |
 | `terrain` |2 (legacy) / 3| legacy height0:11, phase11:3. Current height0:11, phase11:2, maximum height13:11. Phase 3 and maximum height 2047 mean unavailable. |
 | `obstacle` |6| nearest0:12, width12:11, left23:12, right35:12. Width 2047 and side 4095 mean unavailable. Side 4094 means open. |
 | `sonar` |4| latest forward range0:12, phase12:5, failed phase17:5, detour failure22:4. Range 4094 means open and 4095 means unavailable. Reported once per second. |

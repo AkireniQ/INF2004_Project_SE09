@@ -5,6 +5,7 @@
  * line_follow_task() runs both every LINE_PERIOD_MS and drives Motion Control
  */
 #include "subsystem3.h"
+#include "barcode.h"
 #include "../vehicle_controller/vehicle_controller.h"
 
 enum { S3_WAIT_TICK, S3_READ_ADC, S3_UPDATE_STEERING, S3_SUBMIT_LINE };
@@ -62,18 +63,10 @@ LOCAL void tick_release(void *exinf)
     (void)tk_wup_tsk(task);
 }
 
-/* Preserve the team's existing v2 telemetry encoding for A through D. */
-LOCAL unsigned barcode_id(char letter)
-{
-    return letter >= 'A' && letter <= 'D' ? (unsigned)(letter - 'A' + 1) : 0u;
-}
-
 EXPORT void line_follow_task(INT stacd, void *exinf)
 {
     LF_STATE steering = {0};
     SYSTIM time;
-    UW previous_tick = 0;
-    unsigned last_barcode = 0;
     BOOL was_following = FALSE;
     BOOL reported_missed_tick = FALSE;
     T_CCYC cyc = {0};
@@ -122,26 +115,19 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
 
         __atomic_store_n(&sampler_stage, S3_UPDATE_STEERING, __ATOMIC_RELAXED);
         BOOL following = vehicle_is_following();
-        if (!following || !was_following) {
-            last_barcode = 0;
-            steering = (LF_STATE){0};
-        }
-        if (!following || !was_following || center < 0 ||
-            time.lo - previous_tick > 2u * LINE_PERIOD_MS) {
-            barcode_reset();
-        }
+        if (!following || !was_following) steering = (LF_STATE){0};
+        if (!following || !was_following || center < 0) barcode_reset();
+        char letter = 0;
         if (following && center >= 0) {
-            barcode_feed(center);
-            char letter = barcode_take();
-            if (letter != 0) { last_barcode = barcode_id(letter); }
+            letter = barcode_feed(center, time.lo);
         }
-        previous_tick = time.lo;
         was_following = following;
 
         LF_CMD command;
         line_decide(left, center, right, &steering, &command);
         __atomic_store_n(&sampler_stage, S3_SUBMIT_LINE, __ATOMIC_RELAXED);
         vehicle_submit_line(left, center < 0 ? 0 : center, right,
-                            command.left, command.right, command.stop, last_barcode);
+                            command.left, command.right, command.stop,
+                            letter ? (unsigned)(letter - 'A' + 1) : 0u);
     }
 }

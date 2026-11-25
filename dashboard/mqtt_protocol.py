@@ -10,6 +10,7 @@ STOP_REASONS = (
     None, 'Operator STOP received.', 'Line follower requested a stop.',
     'Pico lost valid local IR samples.', 'Motor control fault.',
     'Command connection lost.', 'Obstacle avoidance stopped the car.',
+    'The barcode turn could not confirm the branch tape.',
 )
 AVOIDANCE_PHASES = (
     'idle', 'scanning ahead', 'turning off the tape', 'leaving the tape', 'aligning for the bypass',
@@ -90,11 +91,11 @@ def decode_telemetry(kind, payload):
         fields['fault_labels'] = [label for bit, label in MOTOR_FAULTS if fields['faults'] & bit]
         return fields
     if kind == 'line':
-        ir, barcode = bits(0, 3), bits(3, 3)
-        if word >> 6 or barcode > 4: raise ValueError('Invalid line payload')
+        ir, barcode = bits(0, 3), bits(3, 5)
+        if barcode > 26: raise ValueError('Invalid line payload')
         return dict(ir_bits=ir, left_black=bool(ir & 1), centre_black=bool(ir & 2),
                     right_black=bool(ir & 4), barcode_code=barcode,
-                    barcode='None' if barcode == 0 else 'ABCD'[barcode - 1])
+                    barcode='None' if barcode == 0 else chr(ord('A') + barcode - 1))
     if kind == 'terrain':
         height = bits(0, 11)
         max_height = None

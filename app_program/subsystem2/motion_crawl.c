@@ -2,6 +2,12 @@
 #include "motion_config.h"
 
 #define CRAWL_PWM_MAX 450
+#define CRAWL_ASSIST_PWM_MAX 600
+#define CRAWL_ASSIST_MAX_TICKS 250
+#define CRAWL_ASSIST_RISE_TICKS 12
+#define CRAWL_ASSIST_FALL_TICKS 16
+/* Allow a little release jitter while requiring several quiet encoder ticks. */
+#define CRAWL_ASSIST_DELAY_US ((S2_CRAWL_WINDOW - 1u) * S2_PERIOD_MS * 1000u)
 #define CRAWL_INTEGRAL_MAX (400 * (int32_t)S2_RPM_SCALE)
 #define CRAWL_BALANCE_LIMIT (40 * (int32_t)S2_RPM_SCALE)
 
@@ -37,7 +43,7 @@ void s2_crawl_sample(S2_CRAWL *crawl, uint16_t elapsed_us, uint16_t sample,
 }
 
 unsigned s2_crawl_duty(S2_CRAWL *crawl, unsigned wheel, unsigned target,
-                       const uint32_t rpm[2], bool match_wheels)
+                       const uint32_t rpm[2], bool match_wheels, bool allow_assist)
 {
     int32_t error = (int32_t)(target * S2_RPM_SCALE) - (int32_t)rpm[wheel];
     int32_t integral = clamp(crawl->integral[wheel] + error / 6,
@@ -53,8 +59,18 @@ unsigned s2_crawl_duty(S2_CRAWL *crawl, unsigned wheel, unsigned target,
         trim = clamp(3 * difference, -CRAWL_BALANCE_LIMIT, CRAWL_BALANCE_LIMIT);
     }
 
-    const int32_t maximum = CRAWL_PWM_MAX * (int32_t)S2_RPM_SCALE;
-    int32_t duty = base + 2 * error + integral + trim;
+    int32_t assist = crawl->assist_ticks[wheel];
+    if (!allow_assist) {
+        assist = 0;
+    } else if (crawl->window_us >= CRAWL_ASSIST_DELAY_US && !crawl->total_pulses[wheel]) {
+        assist = clamp(assist + CRAWL_ASSIST_RISE_TICKS, 0, CRAWL_ASSIST_MAX_TICKS);
+    } else if (rpm[wheel] >= target * (S2_RPM_SCALE / 2u)) {
+        assist = clamp(assist - CRAWL_ASSIST_FALL_TICKS, 0, CRAWL_ASSIST_MAX_TICKS);
+    }
+    crawl->assist_ticks[wheel] = (uint8_t)assist;
+    const int32_t maximum = clamp(CRAWL_PWM_MAX + assist, 0, CRAWL_ASSIST_PWM_MAX) *
+                            (int32_t)S2_RPM_SCALE;
+    int32_t duty = base + 2 * error + integral + trim + assist * (int32_t)S2_RPM_SCALE;
     if ((duty <= maximum || error < 0) && (duty >= 0 || error > 0)) {
         crawl->integral[wheel] = integral;
     }

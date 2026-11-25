@@ -22,12 +22,7 @@
 #include "line_steering.h"
 #define S3_PRI_LINE       12
 #define LINE_PERIOD_MS    10
-#define BC_ELEMENTS       29
 
-IMPORT void barcode_reset(void);
-IMPORT void barcode_feed(INT dark);
-IMPORT char barcode_take(void);
-IMPORT BOOL barcode_busy(void);
 IMPORT BOOL s3_motion_move_mm(INT mm);
 IMPORT BOOL s3_motion_turn(INT dir, INT steps);   /* dir < 0 = left, > 0 = right */
 

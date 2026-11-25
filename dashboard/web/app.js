@@ -159,7 +159,7 @@ function drawTelemetry(data) {
     IDLE: "Controller is stopped or waiting for START.",
     FOLLOW_LINE: "Controller is applying line-following recommendations.",
     FAULT: "Controller has stopped on a fault. Inspect the readings before restarting.",
-    TURNING: "A turning mission state was reported.", AVOIDING: "An avoidance mission state was reported.",
+    TURNING: "Navigating a barcode junction and checking the branch tape.", AVOIDING: "An avoidance mission state was reported.",
     RECOVER_LINE: "A line-recovery mission state was reported."
   };
   const stopped = vehicle?.state === "IDLE" || vehicle?.state === "FAULT";

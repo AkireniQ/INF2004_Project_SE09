@@ -95,6 +95,14 @@ bool motion_arc(bool right,uint16_t *command)
     *command=(uint16_t)(S2_ARC|((unsigned)right<<4));
     return true;
 }
+bool motion_crawl_pivot(unsigned degrees, bool right, uint16_t *command)
+{
+    if (!command || !degrees || degrees > 360u) return false;
+    unsigned arg = degrees * 2u + right;
+    if (!submit(S2_CRAWL_PIVOT, arg)) return false;
+    *command = (uint16_t)(S2_CRAWL_PIVOT | (arg << 4));
+    return true;
+}
 bool motion_move_forward_mm(unsigned n){return n<=MAX_DISTANCE_MM && (n?submit(S2_MOVE_F,n):motion_ready());}
 bool motion_move_backward_mm(unsigned n){return n<=MAX_DISTANCE_MM && (n?submit(S2_MOVE_B,n):motion_ready());}
 bool motion_turn_left(unsigned n){return n>=1&&n<=8&&submit(S2_LEFT,n-1);}

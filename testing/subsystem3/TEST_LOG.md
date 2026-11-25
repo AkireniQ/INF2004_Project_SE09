@@ -36,3 +36,13 @@ Add a new row for every run. Never edit or delete old rows.
 | Date | Test ID | Commit | Tester | Result | Log / evidence | Notes |
 |---|---|---|---|---|---|---|
 | YYYY-MM-DD | S3-U01 | `abc1234` | | PASS / FAIL | `logs/YYYY-MM-DD_….txt` | |
+
+## Medium Code 39 regression
+
+The test replays A, F and Z from slides 3, 7 and 11 of the supplied deck. The images are placed at 250 mm wide and the printed bar pattern spans about 243 mm at actual size. Replay covers both reading directions, irregular sample intervals, isolated optical glitches, and discarding incomplete frames.
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror testing/subsystem3/test_barcode.c \
+  app_program/subsystem3/barcode.c -o /tmp/test_barcode
+/tmp/test_barcode
+```

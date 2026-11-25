@@ -10,6 +10,7 @@
 #define ARC_DIAMETER_MM (2u * S2_ARC_RADIUS_MM)
 #define ARC_INNER_RPM ((S3_CRUISE_RPM * (ARC_DIAMETER_MM - EFFECTIVE_TRACK_MM) + S2_ARC_RADIUS_MM) / ARC_DIAMETER_MM)
 #define ARC_OUTSIDE_RPM (2u * S3_CRUISE_RPM - ARC_INNER_RPM)
+#define CRAWL_ASSIST_MIN_RPM 6u
 
 _Static_assert(ARC_DIAMETER_MM > EFFECTIVE_TRACK_MM, "Both wheels must roll forward on a detour arc");
 _Static_assert(S3_CRUISE_RPM <= S2_CRAWL_MAX_RPM && ARC_INNER_RPM > 3u,
@@ -30,6 +31,7 @@ static struct {
     unsigned left_reverse:1;
     unsigned right_reverse:1;
     unsigned arc:1;
+    unsigned crawl_pivot:1;
     unsigned faults:4;
 } state;
 /* Explicit initial bounds: RPM 0..300 (9); errors -300..240 (10 signed);
@@ -111,6 +113,7 @@ void s2_core_stop(void)
     drive(0,0); drive(1,0);
     state.mode=IDLE;
     state.arc=false;
+    state.crawl_pivot=false;
     crawling=false;
     for(unsigned i=0;i<2;i++) {
         wheels[i].integral=0;
@@ -198,19 +201,43 @@ static bool move_mm(unsigned mm,bool reverse)
 }
 bool s2_core_move_forward_mm(unsigned mm) { return move_mm(mm,false); }
 bool s2_core_move_backward_mm(unsigned mm) { return move_mm(mm,true); }
-static unsigned turn_counts(unsigned steps,unsigned wheel)
+static unsigned turn_counts(unsigned degrees,unsigned wheel)
 {
-    uint64_t numerator=(uint64_t)EFFECTIVE_TRACK_MM*steps*45u*cpr(wheel);
+    uint64_t numerator=(uint64_t)EFFECTIVE_TRACK_MM*degrees*cpr(wheel);
     uint32_t denominator=360u*WHEEL_DIAMETER_MM*10u;
     return (unsigned)((numerator+denominator/2)/denominator);
 }
+static bool pivot(unsigned degrees, bool right)
+{
+    if (!degrees || degrees > 360u) return false;
+    return start(TURN, !right, right, turn_counts(degrees, 0), turn_counts(degrees, 1));
+}
 static bool turn(unsigned steps,bool right)
 {
-    if(steps<1 || steps>8) return false;
-    return start(TURN,!right,right,turn_counts(steps,0),turn_counts(steps,1));
+    return steps >= 1u && steps <= 8u && pivot(steps * 45u, right);
 }
 bool s2_core_turn_left(unsigned steps) { return turn(steps,false); }
 bool s2_core_turn_right(unsigned steps) { return turn(steps,true); }
+
+bool s2_core_crawl_pivot(unsigned degrees, bool right)
+{
+    unsigned level = state.level;
+    if (!level) state.level = 1;
+    bool accepted = pivot(degrees, right);
+    state.level = level;
+    if (accepted) {
+        state.crawl_pivot = true;
+        state.left_rpm = state.right_rpm = S3_CRUISE_RPM;
+    }
+    return accepted;
+}
+
+bool s2_core_pivot_reached(unsigned degrees, const S2_STATUS *status)
+{
+    return degrees && degrees <= 360u &&
+           s2_get_bits(status, 41, 13) >= turn_counts(degrees, 0) &&
+           s2_get_bits(status, 54, 13) >= turn_counts(degrees, 1);
+}
 
 bool s2_core_maneuver(unsigned arg)
 {
@@ -275,8 +302,7 @@ bool s2_core_maneuver_finished(unsigned arg,const S2_STATUS *status)
 {
     if(s2_get_bits(status,0,2)!=IDLE || s2_get_bits(status,5,4))return false;
     if((arg&~1u)==S2_MANEUVER_TURN)
-        return s2_get_bits(status,41,13)>=turn_counts(2,0) &&
-               s2_get_bits(status,54,13)>=turn_counts(2,1);
+        return s2_core_pivot_reached(90, status);
     unsigned mm=arg>S2_MANEUVER_REVERSE_BASE?arg-S2_MANEUVER_REVERSE_BASE:arg;
     return mm && mm<=MAX_DISTANCE_MM && s2_core_distance_reached(mm,status);
 }
@@ -317,14 +343,16 @@ void s2_core_service(void)
     if(moving && state.mode!=VELOCITY && now-command_start>MOVE_TIMEOUT_US) { fail(FAULT_TIMEOUT); return; }
     bool slow_targets=state.left_rpm<=S2_CRAWL_MAX_RPM && state.right_rpm<=S2_CRAWL_MAX_RPM;
     bool slow_forward=slow_targets && state.mode==VELOCITY && !state.left_reverse && !state.right_reverse;
-    bool slow_distance=slow_targets && state.mode==DISTANCE;
-    bool low_speed=slow_forward || slow_distance || state.arc;
+    bool slow_bounded=slow_targets && (state.mode==DISTANCE || state.crawl_pivot);
+    bool low_speed=slow_forward || slow_bounded || state.arc;
     if(low_speed && !crawling) { crawl=(S2_CRAWL){0}; }
     crawling=low_speed;
     uint32_t crawl_rpm[2]={0};
     if(crawling) { s2_crawl_sample(&crawl,(uint16_t)elapsed,sample,crawl_rpm); }
-    bool both_driving=slow_forward || (slow_distance && wheels[0].progress<wheels[0].target &&
+    bool both_driving=slow_forward || (slow_bounded && wheels[0].progress<wheels[0].target &&
                                       wheels[1].progress<wheels[1].target);
+    bool allow_assist = both_driving && (slow_forward || state.crawl_pivot) &&
+                        state.left_rpm >= CRAWL_ASSIST_MIN_RPM && state.right_rpm >= CRAWL_ASSIST_MIN_RPM;
     bool match_wheels=both_driving && state.left_rpm==state.right_rpm && state.left_rpm!=0u;
     int arc_trim=0;
     if(state.arc) {
@@ -358,12 +386,13 @@ void s2_core_service(void)
                 hold_pivot_wheel(w);
             } else { drive(w,0); }
             wheels[w].integral=0; wheels[w].previous_error=0;
+            crawl.assist_ticks[w] = 0;
             stall_start[w]=0;
             continue;
         }
         /* Reduce speed near a distance/turn target; coast overshoot still needs calibration. */
         if(state.mode!=VELOCITY && wheels[w].target-wheels[w].progress<80 && target>60) target=60;
-        unsigned ticks=crawling ? s2_crawl_duty(&crawl,w,target,crawl_rpm,match_wheels)
+        unsigned ticks=crawling ? s2_crawl_duty(&crawl, w, target, crawl_rpm, match_wheels, allow_assist)
                                 : 10u*pid(w,target);
         if(n || ticks<200u) stall_start[w]=now;
         if(!stall_start[w]) stall_start[w]=now;

@@ -65,10 +65,10 @@ static void check_coupling(void)
     S2_CRAWL straight = {0};
     S2_CRAWL curve = {0};
     uint32_t rpm[2] = {11u * S2_RPM_SCALE, 2u * S2_RPM_SCALE};
-    unsigned fast = s2_crawl_duty(&straight, 0, 10, rpm, true);
-    unsigned slow = s2_crawl_duty(&straight, 1, 10, rpm, true);
-    unsigned independent_fast = s2_crawl_duty(&curve, 0, 10, rpm, false);
-    unsigned independent_slow = s2_crawl_duty(&curve, 1, 10, rpm, false);
+    unsigned fast = s2_crawl_duty(&straight, 0, 10, rpm, true, false);
+    unsigned slow = s2_crawl_duty(&straight, 1, 10, rpm, true, false);
+    unsigned independent_fast = s2_crawl_duty(&curve, 0, 10, rpm, false, false);
+    unsigned independent_slow = s2_crawl_duty(&curve, 1, 10, rpm, false, false);
     assert(fast < independent_fast && slow > independent_slow);
 }
 
@@ -122,6 +122,32 @@ static void check_drivetrain(void)
     assert(pwm[RIGHT_IN_A] > 0u && pwm[RIGHT_IN_B] == 0u);
 }
 
+static void check_hump_load(void)
+{
+    s2_core_init();
+    assert(s2_core_set_wheel_rpm(12, 12));
+    for (unsigned i = 0; i < 250u; ++i) {
+        /* About 12 RPM on level ground. */
+        unsigned pulses = i % 4u == 0u ? 2u : 1u;
+        tick(pulses, pulses);
+    }
+    assert(crawl.assist_ticks[0] == 0 && crawl.assist_ticks[1] == 0);
+
+    bool moving_over_hump = false;
+    for (unsigned i = 0; i < 90u; ++i) {
+        /* The loaded right wheel needs more PWM than the normal crawl cap. */
+        moving_over_hump = pwm[RIGHT_IN_A] > 450u;
+        tick(1, moving_over_hump ? 1u : 0u);
+        assert(!s2_core_faults() && pwm[RIGHT_IN_A] <= 600u);
+        if (moving_over_hump) break;
+    }
+    assert(moving_over_hump && crawl.assist_ticks[0] == 0 && crawl.assist_ticks[1] > 0);
+    assert(state.left_rpm == 12 && state.right_rpm == 12);
+
+    for (unsigned i = 0; i < 28u; ++i) tick(1, 1);
+    assert(crawl.assist_ticks[1] == 0 && pwm[RIGHT_IN_A] <= 450u);
+}
+
 static void check_stall(void)
 {
     s2_core_init();
@@ -136,6 +162,7 @@ int main(void)
     check_window();
     check_coupling();
     check_drivetrain();
+    check_hump_load();
     check_stall();
     puts("PASS low-speed encoder filtering, unequal wheel drag, turn output and stall protection");
     return 0;

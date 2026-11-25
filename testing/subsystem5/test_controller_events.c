@@ -60,6 +60,9 @@ bool s2_core_maneuver_finished(unsigned arg, const S2_STATUS *status)
 { (void)arg; return s2_get_bits(status, 0, 2) == 0; }
 bool s2_core_arc_finished(bool right, const S2_STATUS *status)
 { (void)right; return s2_get_bits(status, 0, 2) == 0; }
+static unsigned pivot_angle;
+bool s2_core_pivot_reached(unsigned degrees, const S2_STATUS *status)
+{ (void)status; return pivot_angle >= degrees; }
 bool motion_get_feedback(S2_STATUS *status, S2_REPLY *reply, bool *busy)
 {
     *status = motor;
@@ -104,6 +107,14 @@ bool motion_arc(bool right, uint16_t *command)
 {
     assert(!queued_command);
     *command = queued_command = (uint16_t)(S2_ARC | ((unsigned)right << 4));
+    motor_busy = true;
+    return true;
+}
+bool motion_crawl_pivot(unsigned degrees, bool right, uint16_t *command)
+{
+    assert(!queued_command);
+    pivot_angle = 0;
+    *command = queued_command = (uint16_t)(S2_CRAWL_PIVOT | ((degrees * 2u + right) << 4));
     motor_busy = true;
     return true;
 }
@@ -219,6 +230,98 @@ static void test_imu_restart(void)
     work();
     assert(vehicle_state() == VC_IDLE && imu.stop_latched && stop_count > stops);
     puts("PASS Buddy 4 blocks unsafe/queued restart and stops again after explicit restart");
+}
+
+static void junction_sample(unsigned left, unsigned right, unsigned decoded, unsigned elapsed)
+{
+    clock_ms += elapsed;
+    vehicle_submit_line(left, 0, right, 12, 12, FALSE, decoded);
+    work();
+}
+
+static void begin_junction(unsigned decoded)
+{
+    model = (VC_MODEL){.state = VC_FOLLOW_LINE};
+    pending = (__typeof__(pending)){0};
+    drive = (__typeof__(drive)){0};
+    motor_stopped();
+    junction_sample(0, 0, decoded, 10);
+    assert(vehicle_state() == VC_FOLLOW_LINE && queued_command);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    for (unsigned i = 0; i < 2; ++i) {
+        junction_sample(850, 850, 0, 10);
+        assert(vehicle_state() == VC_FOLLOW_LINE);
+    }
+    junction_sample(850, 850, 0, 10);
+    assert(vehicle_state() == VC_TURNING && model.junction.phase == VC_JUNCTION_ADVANCE);
+    assert(!queued_command);
+    motor_stopped();
+    work();
+    junction_sample(850, 850, 0, 240);
+    assert(queued_command >> 4 == S5_IR_TO_AXLE_MM + S5_TAPE_WIDTH_MM / 2u);
+    complete_move();
+    assert(model.junction.phase == VC_JUNCTION_PIVOT);
+    junction_sample(0, 0, 0, 240);
+    assert((queued_command & 15u) == S2_CRAWL_PIVOT);
+}
+
+static void test_barcode_junction(void)
+{
+    begin_junction('F' - 'A' + 1);
+    assert(queued_command >> 4 == 2u * (90u + VC_JUNCTION_SEARCH_DEG) + 1u);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    pivot_angle = 50;
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 0, 0, 10);
+    junction_sample(0, 0, 0, 10);
+    assert(!model.junction.dark_samples); /* Ignore tape before the branch window. */
+    pivot_angle = 83;
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 0, 0, 10);
+    assert(model.junction.phase == VC_JUNCTION_PIVOT);
+    junction_sample(0, 0, 0, 10);
+    assert(model.junction.phase == VC_JUNCTION_SETTLE && motor_busy && !queued_command);
+    motor_stopped();
+    work();
+    junction_sample(0, 0, 0, 240);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !queued_command);
+    junction_sample(0, 0, 0, 10);
+    assert(queued_command && data.barcode == 6u);
+    vehicle_request_stop();
+    work();
+
+    begin_junction('A' - 'A' + 1);
+    assert(queued_command >> 4 == 2u * (90u + VC_JUNCTION_SEARCH_DEG));
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    pivot_angle = 90u + VC_JUNCTION_SEARCH_DEG;
+    motor_stopped();
+    work();
+    assert(model.junction.phase == VC_JUNCTION_SWEEP);
+    junction_sample(0, 0, 0, 240);
+    assert(queued_command >> 4 == 4u * VC_JUNCTION_SEARCH_DEG + 1u);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    pivot_angle = 2u * VC_JUNCTION_SEARCH_DEG;
+    motor_stopped();
+    work();
+    assert(vehicle_state() == VC_FAULT && model.reason == VC_REASON_BARCODE_LINE &&
+           model.reposition_required && !queued_command);
+
+    begin_junction('C' - 'A' + 1);
+    assert(queued_command >> 4 == 2u * (180u + VC_JUNCTION_SEARCH_DEG) + 1u);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    vehicle_request_stop();
+    work();
+    assert(vehicle_state() == VC_IDLE && model.reposition_required && !queued_command);
+    motor_stopped();
+    work();
+    puts("PASS barcode junction centres the axle, confirms tape and bounds the search");
 }
 
 int main(void)
@@ -546,5 +649,6 @@ int main(void)
            !queued_command);
 
     puts("PASS missing echo does not start a scan, close echo stops before scanning, and bypass preserves STOP");
+    test_barcode_junction();
     test_imu_restart();
 }

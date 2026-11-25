@@ -40,6 +40,7 @@ bool motion_set_wheel_rpm_tracked(unsigned left,unsigned right,uint16_t *command
 bool motion_maneuver(unsigned distance_mm,bool right,uint16_t *command);
 bool motion_maneuver_reverse(unsigned distance_mm,uint16_t *command);
 bool motion_arc(bool right,uint16_t *command);
+bool motion_crawl_pivot(unsigned degrees,bool right,uint16_t *command);
 bool motion_move_forward_mm(unsigned mm); /* 1..2000; 0 no-op */
 bool motion_move_backward_mm(unsigned mm);
 bool motion_turn_left(unsigned steps); /* 1..8 = 45..360 degrees */
