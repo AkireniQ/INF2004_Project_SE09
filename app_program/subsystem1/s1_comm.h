@@ -7,7 +7,7 @@
  * Callers own vehicle/sensor state and pass a coherent snapshot. */
 ER s1_publish_vehicle(unsigned state, unsigned fault_mask);
 ER s1_publish_line(unsigned ir_bits, unsigned barcode); /* 0 none, 1..4 A..D */
-ER s1_publish_terrain(unsigned height_mm, unsigned phase); /* phases 0..5 */
+ER s1_publish_terrain(unsigned height_mm, unsigned max_height_mm, unsigned phase);
 ER s1_publish_obstacle(unsigned nearest_mm, unsigned width_mm,
                        unsigned left_mm, unsigned right_mm);
 ER s1_publish_motion(void);

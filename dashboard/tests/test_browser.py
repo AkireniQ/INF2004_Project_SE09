@@ -120,6 +120,7 @@ def main():
             assert page.locator("#stop").is_enabled()
             assert page.locator(".telemetry-card").count() == 5
             expect(page.locator("#terrain-height")).to_have_text("—")
+            expect(page.locator("#terrain-max-height")).to_have_text("—")
             expect(page.locator("#obstacle-freshness")).to_have_text("No data")
             assert page.locator(".connection-strip, .control-card, .heartbeat-card").count() == 3
             print("PASS browser: controls, heartbeat, all five telemetry cards and missing-data placeholders render")
@@ -155,6 +156,11 @@ def main():
             expect(page.locator("#right-ir")).to_have_text("No black")
             expect(page.locator("#barcode")).to_have_text("B")
             expect(page.locator("#terrain-height")).to_have_text("125")
+            expect(page.locator("#terrain-phase")).to_have_text("Descending")
+            fixture.publish(root + "/terrain", bytes.fromhex("16 b8 04")).wait_for_publish(timeout=5)
+            expect(page.locator("#terrain-height")).to_have_text("22")
+            expect(page.locator("#terrain-max-height")).to_have_text("37 mm")
+            expect(page.locator("#terrain-phase")).to_have_text("Unavailable")
             expect(page.locator("#obstacle-nearest")).to_have_text("500 mm")
             assert page.locator("#left-rpm-path").get_attribute("d")
             print("PASS end-to-end telemetry: all five binary topics decoded over real broker, HTTP and browser")

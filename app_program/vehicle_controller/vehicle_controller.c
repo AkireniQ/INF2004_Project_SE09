@@ -8,6 +8,7 @@
 #include "../subsystem3/line_steering.h"
 #include "../subsystem5/subsystem5.h"
 #include "../subsystem4/subsystem4.h"
+#include "../subsystem4/b4_terrain_report.h"
 #ifndef VC_AUTO_START
 #if TM_MQTT
 #define VC_AUTO_START 0
@@ -193,11 +194,18 @@ BOOL vehicle_request_start(void)
     else tm_printf((UB*)"[VEHICLE] START rejected: blocker=%u\n", (unsigned)block);
     return ok;
 }
-BOOL vehicle_submit_terrain(unsigned height,unsigned phase)
+BOOL vehicle_submit_terrain(unsigned height, unsigned max_height, unsigned phase)
 {
-    if(height>2000||phase>5||!lock())return FALSE;
-    data.height_mm=height;data.terrain_phase=phase;
-    data.terrain_timestamp_ms=now_ms();data.terrain_valid=TRUE;unlock();return TRUE;
+    if (height > B4_TERRAIN_HEIGHT_MAX_MM || phase > B4_TERRAIN_PHASE_UNAVAILABLE ||
+        (max_height != B4_TERRAIN_HEIGHT_UNAVAILABLE &&
+         (max_height < height || max_height > B4_TERRAIN_HEIGHT_MAX_MM)) || !lock()) return FALSE;
+    data.height_mm = height;
+    data.max_height_mm = max_height;
+    data.terrain_phase = phase;
+    data.terrain_timestamp_ms = now_ms();
+    data.terrain_valid = TRUE;
+    unlock();
+    return TRUE;
 }
 void vehicle_enable_obstacle_monitor(void)
 {

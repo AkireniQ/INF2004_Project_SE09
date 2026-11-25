@@ -23,7 +23,7 @@ The Pico must run the MQTT firmware (`make NET=lwip MQTT=1`), not the normal non
 - **Vehicle controller:** mission state and reported subsystem fault flags.
 - **Wheels/motion:** measured left/right RPM; propulsion PWM; actual motor mode; global speed level; recent 120-sample RPM trend; raw motor-fault labels; bounded-move progress counts.
 - **Line/barcode:** left/right black-detection flags, centre flag, reported barcode letter.
-- **Terrain:** reported height in millimetres and terrain phase.
+- **Hump height:** last completed valid hump and highest hump since power-up, both in millimetres. The terrain phase can become unavailable while the completed heights remain valid.
 - **Obstacle:** nearest distance, width, left/right clearance in millimetres.
 - **Connection:** live heartbeat age, Wi-Fi/broker/subscription flags and bridge drop flags.
 - **Commands/events:** exact binary START/STOP, Pico acknowledgment and a bounded connection/mission/fault event list.
@@ -54,7 +54,7 @@ Subscriptions use the configured root and these suffixes:
 | `vehicle` |1| state bits0..2, fault mask bits3..7 |
 | `motion` |9| S2_STATUS packed bits: mode0:2, level2:3, faults5:4, L RPM9:9, R RPM18:9, L PWM27:7, R PWM34:7, L progress41:13, R progress54:13 |
 | `line` |1| L/C/R black bits0/1/2, barcode bits3..5 |
-| `terrain` |2| height0:11, phase11:3 |
+| `terrain` |2 (legacy) / 3| legacy height0:11, phase11:3. Current height0:11, phase11:2, maximum height13:11. Phase 3 and maximum height 2047 mean unavailable. |
 | `obstacle` |6| nearest0:12, width12:11, left23:12, right35:12. Width 2047 and side 4095 mean unavailable. Side 4094 means open. |
 | `sonar` |4| latest forward range0:12, phase12:5, failed phase17:5, detour failure22:4. Range 4094 means open and 4095 means unavailable. Reported once per second. |
 

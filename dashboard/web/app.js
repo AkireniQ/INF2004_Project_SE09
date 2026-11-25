@@ -197,7 +197,8 @@ function drawTelemetry(data) {
   text("barcode", line?.barcode);
   text("centre-ir", line ? line.centre_black ? "Black" : "Not set" : null);
   text("terrain-height", terrain?.height_mm);
-  text("terrain-phase", terrain?.phase);
+  text("terrain-max-height", typeof terrain?.max_height_mm === "number" ? terrain.max_height_mm + " mm" : null);
+  text("terrain-phase", terrain?.phase_label);
   for (const [id, key] of [["nearest", "nearest_mm"], ["width", "width_mm"], ["left", "left_mm"], ["right", "right_mm"]]) {
     const value = obstacle?.[key];
     text("obstacle-" + id, typeof value === "number" ? value + " mm" : value);

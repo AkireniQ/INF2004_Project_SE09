@@ -1,4 +1,5 @@
 #include "s1_wire.h"
+#include "../subsystem4/b4_terrain_report.h"
 
 void s1_wire_put(unsigned char *bytes, unsigned bit, unsigned count, unsigned value)
 {
@@ -35,12 +36,15 @@ int s1_wire_line(unsigned char out[1], unsigned ir, unsigned barcode)
     return 1;
 }
 
-int s1_wire_terrain(unsigned char out[2], unsigned height_mm, unsigned phase)
+int s1_wire_terrain(unsigned char out[3], unsigned height_mm, unsigned max_height_mm, unsigned phase)
 {
-    if (out == 0 || height_mm > 2000u || phase > 5u) { return 0; }
-    out[0] = 0; out[1] = 0;
+    if (out == 0 || height_mm > B4_TERRAIN_HEIGHT_MAX_MM || phase > B4_TERRAIN_PHASE_UNAVAILABLE ||
+        (max_height_mm != B4_TERRAIN_HEIGHT_UNAVAILABLE &&
+         (max_height_mm < height_mm || max_height_mm > B4_TERRAIN_HEIGHT_MAX_MM))) return 0;
+    out[0] = out[1] = out[2] = 0;
     s1_wire_put(out, 0u, 11u, height_mm);
-    s1_wire_put(out, 11u, 3u, phase);
+    s1_wire_put(out, 11u, 2u, phase);
+    s1_wire_put(out, 13u, 11u, max_height_mm);
     return 1;
 }
 

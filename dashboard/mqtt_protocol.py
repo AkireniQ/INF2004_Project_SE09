@@ -24,6 +24,7 @@ AVOIDANCE_FAILURES = (
     'Operator stopped the detour', 'Controller interlock stopped the detour', 'Maneuver timed out',
     'Left edge outside scan limits', 'Right edge outside scan limits', 'Both edges outside scan limits',
 )
+TERRAIN_PHASES = ('Flat', 'Ascending', 'Descending', 'Unavailable')
 
 def command_payload(command):
     if command == 'start': return b'\x01'
@@ -32,8 +33,9 @@ def command_payload(command):
     raise ValueError('command must be start, stop or reset')
 
 def decode_telemetry(kind, payload):
-    sizes = dict(vehicle=1, motion=9, line=1, terrain=2, obstacle=6, controller=25, sonar=4)
-    if kind not in sizes or len(payload) not in ((25,31) if kind=='controller' else (sizes[kind],)):
+    sizes = dict(vehicle=(1,), motion=(9,), line=(1,), terrain=(2, 3),
+                 obstacle=(6,), controller=(25, 31), sonar=(4,))
+    if len(payload) not in sizes.get(kind, ()):
         raise ValueError('Incorrect binary telemetry length')
     word = int.from_bytes(payload, 'little')
     def bits(offset, width): return (word >> offset) & ((1 << width) - 1)
@@ -94,9 +96,23 @@ def decode_telemetry(kind, payload):
                     right_black=bool(ir & 4), barcode_code=barcode,
                     barcode='None' if barcode == 0 else 'ABCD'[barcode - 1])
     if kind == 'terrain':
-        height, phase = bits(0, 11), bits(11, 3)
-        if word >> 14 or height > 2000 or phase > 5: raise ValueError('Invalid terrain payload')
-        return dict(height_mm=height, phase=phase)
+        height = bits(0, 11)
+        max_height = None
+        if len(payload) == 2:
+            phase = bits(11, 3)
+            if word >> 14 or phase > 5:
+                raise ValueError('Invalid legacy terrain payload')
+        else:
+            phase = bits(11, 2)
+            peak = bits(13, 11)
+            if peak != 2047:
+                if not height <= peak <= 2000:
+                    raise ValueError('Invalid maximum hump height')
+                max_height = peak
+        if height > 2000:
+            raise ValueError('Invalid hump height')
+        return dict(height_mm=height, max_height_mm=max_height, phase=phase,
+                    phase_label=TERRAIN_PHASES[min(phase, 3)])
     if kind == 'sonar':
         forward, phase, failed_phase, failure = bits(0, 12), bits(12, 5), bits(17, 5), bits(22, 4)
         if (word >> 26 or (4000 < forward < 4094) or max(phase, failed_phase) >= len(AVOIDANCE_PHASES)):
