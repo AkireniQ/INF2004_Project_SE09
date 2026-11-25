@@ -32,6 +32,10 @@ enum { SCAN_OFF, SCAN_READY, SCAN_ACTIVE };
 static ID guard, work_event;
 static VEHICLE_SNAPSHOT data;
 static VC_MODEL model;
+static BARCODE_MAP barcode_map = {
+    .left = 'A' - 'A' + 1, .right = 'F' - 'A' + 1,
+    .straight = 'D' - 'A' + 1, .uturn = 'C' - 'A' + 1,
+};
 static struct {
     unsigned start:1, stop:1, line_stop:1, auto_start:1, reset:1;
     unsigned obstacle_monitor:1, profile_valid:1, scan:2, follow_blocked:1;
@@ -91,13 +95,38 @@ ER vehicle_init(void)
 }
 static VC_NAV barcode_nav(unsigned decoded)
 {
-    /* Match the team's Subsystem 3 mapping. D crosses under normal tracking. */
-    switch ('A' + decoded - 1u) {
-    case 'A': return VC_NAV_LEFT;
-    case 'F': return VC_NAV_RIGHT;
-    case 'C': return VC_NAV_UTURN;
-    default: return VC_NAV_NONE;
+    if (decoded == barcode_map.left) return VC_NAV_LEFT;
+    if (decoded == barcode_map.right) return VC_NAV_RIGHT;
+    if (decoded == barcode_map.uturn) return VC_NAV_UTURN;
+    /* The straight instruction continues using normal line tracking. */
+    return VC_NAV_NONE;
+}
+
+BOOL vehicle_set_barcode_map(BARCODE_MAP map)
+{
+    if (!barcode_map_valid(map) || !lock()) return FALSE;
+    S2_STATUS motor;
+    bool busy = false;
+    BOOL stopped = !vc_core_running(&model) && !pending.start && !pending.auto_start &&
+                   !pending.stop && !pending.reset &&
+                   motion_get_feedback(&motor, NULL, &busy) && !busy &&
+                   s2_get_bits(&motor, 9, 9) <= 2 && s2_get_bits(&motor, 18, 9) <= 2;
+    if (stopped) {
+        barcode_map = map;
+        pending.barcode_armed = pending.barcode_turn = VC_NAV_NONE;
+        pending.junction_samples = 0;
+        data.barcode = 0;
     }
+    unlock();
+    return stopped;
+}
+
+BOOL vehicle_get_barcode_map(BARCODE_MAP *map)
+{
+    if (!map || !lock()) return FALSE;
+    *map = barcode_map;
+    unlock();
+    return TRUE;
 }
 
 void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned decoded)
@@ -111,7 +140,9 @@ void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned
     if (model.state == VC_FOLLOW_LINE && !pending.stop) {
         if (decoded) {
             data.barcode = decoded;
-            pending.barcode_armed = barcode_nav(decoded);
+            VC_NAV nav = barcode_nav(decoded);
+            if (nav != VC_NAV_NONE || decoded == barcode_map.straight)
+                pending.barcode_armed = nav;
         }
         if (l < S5_WIDE_MARKING || r < S5_WIDE_MARKING) {
             pending.junction_samples = 0;

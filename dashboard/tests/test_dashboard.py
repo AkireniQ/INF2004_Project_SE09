@@ -10,6 +10,11 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import Dashboard, DashboardServer, CommandUnavailable, ipv4_address, port_number
+from mqtt_protocol import barcode_map_payload
+
+DEFAULT_MAP = dict(left="A", right="F", straight="D", uturn="C")
+CUSTOM_MAP = dict(left="Z", right="X", straight="I", uturn="Y")
+CUSTOM_MAP_PACKET = bytes.fromhex("1a a7 ac")
 
 
 class FakeClient:
@@ -108,6 +113,33 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.dashboard.send("forward")
 
+    def test_barcode_map_confirmation_and_timeout(self):
+        self.connected()
+        self.message("status", b"\x07")
+        diagnostic = bytes((2, 0, 0, 0, 1 | 2 | 64)) + bytes(26)
+        self.message("controller", diagnostic)
+        self.message("motion", bytes(9))
+        self.message("barcode_map", barcode_map_payload(DEFAULT_MAP), retain=True)
+        self.assertFalse(self.dashboard.snapshot()["barcode_map_allowed"])
+        self.message("barcode_map", barcode_map_payload(DEFAULT_MAP))
+        self.assertTrue(self.dashboard.snapshot()["barcode_map_allowed"])
+        self.dashboard.send_barcode_map(CUSTOM_MAP)
+        self.assertEqual(self.client.sent[-1], (self.dashboard.root + "/command",
+                                               CUSTOM_MAP_PACKET, 0, False))
+        with self.assertRaises(CommandUnavailable):
+            self.dashboard.send("start")
+        self.message("barcode_map", barcode_map_payload(DEFAULT_MAP))
+        self.message("barcode_map", CUSTOM_MAP_PACKET, retain=True)
+        self.assertEqual(self.dashboard.snapshot()["barcode_request"]["status"], "pending")
+        self.message("barcode_map", CUSTOM_MAP_PACKET)
+        state = self.dashboard.snapshot()
+        self.assertEqual(state["barcode_request"]["status"], "applied")
+        self.assertEqual(state["telemetry"]["barcode_map"]["data"], CUSTOM_MAP)
+        self.assertTrue(state["start_allowed"])
+        self.dashboard.send_barcode_map(DEFAULT_MAP)
+        self.now += 6
+        self.assertEqual(self.dashboard.snapshot()["barcode_request"]["status"], "unconfirmed")
+
     def test_console_address_and_port_validation(self):
         self.assertEqual(ipv4_address("192.168.1.10"), "192.168.1.10")
         self.assertEqual(port_number("1883"), 1883)
@@ -174,6 +206,30 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.command("stop")[0], 200)
         self.assertEqual([entry[1] for entry in self.dashboard.client.sent], [b"\x01", b"\x00"])
         self.assertEqual(self.command("restart")[0], 400)
+
+    def test_barcode_map_http_validation_and_stopped_gate(self):
+        headers = {"Content-Type": "application/json", "X-Dashboard-Token": self.server.csrf}
+        def apply(mapping, **override):
+            return self.request("POST", "/api/barcode-map", json.dumps(mapping), headers | override)
+
+        def publish(topic, payload):
+            self.dashboard.on_message(None, None, SimpleNamespace(
+                topic=f"{self.dashboard.root}/{topic}", payload=payload, retain=False))
+
+        for invalid in (dict(CUSTOM_MAP, right="Z"), dict(CUSTOM_MAP, right="a"),
+                        dict(CUSTOM_MAP, right="AA"), dict(left="A"), ["A", "B", "C", "D"]):
+            self.assertEqual(apply(invalid)[0], 400)
+        self.assertEqual(apply(CUSTOM_MAP, **{"X-Dashboard-Token": "wrong"})[0], 403)
+        self.assertEqual(apply(CUSTOM_MAP)[0], 503)
+        publish("barcode_map", barcode_map_payload(DEFAULT_MAP))
+        publish("motion", bytes(9))
+        publish("controller", bytes((2, 1, 0, 0, 1 | 2 | 64)) + bytes(26))
+        self.assertEqual(apply(CUSTOM_MAP)[0], 503)
+        self.assertEqual(self.dashboard.client.sent, [])
+        publish("controller", bytes((2, 0, 0, 0, 1 | 2 | 64)) + bytes(26))
+        self.assertEqual(apply(CUSTOM_MAP)[0], 200)
+        self.assertEqual(apply(DEFAULT_MAP)[0], 503)
+        self.assertEqual(self.dashboard.client.sent[-1][1], CUSTOM_MAP_PACKET)
 
     def test_detour_fault_allows_stopped_reset_but_blocks_start_until_repositioned(self):
         def publish(topic, payload):

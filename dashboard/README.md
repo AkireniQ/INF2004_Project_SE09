@@ -40,6 +40,10 @@ Heartbeat expires after 15 seconds. START is available only when the broker/subs
 
 The Pico ACK confirms acceptance for processing. Inspect mission state, measured wheel RPM and faults to confirm movement. During an obstacle detour the mission state shows Avoiding, then Recover line before returning to Follow line. The obstacle card shows the latest profile. A started mission uses local sensor feedback if MQTT goes offline. Dashboard commands require a live connection.
 
+## Assign barcode instructions
+
+With the car stopped, choose four different A–Z letters in **Barcode navigation** and click **Apply mapping**. Wait for the Pico to confirm the active mapping before starting. The controller uses an assigned letter at the next confirmed junction. Straight keeps line tracking active through the crossing. Unassigned letters appear in telemetry without changing navigation. The Pico keeps the mapping in memory until it restarts. The power-up defaults are Left A, Right F, Straight D and U-turn C.
+
 MQTT QoS 0 does not guarantee delivery. The browser reports uncertainty if its HTTP request times out. Faults need investigation before a new START. This is a local dashboard with Host/Origin and command-token checks, bound to loopback; it is not designed for public Internet exposure. Broker TLS/auth configuration is not added by this dashboard or the current Pico MQTT client.
 
 ## Protocol
@@ -54,11 +58,14 @@ Subscriptions use the configured root and these suffixes:
 | `vehicle` |1| state bits0..2, fault mask bits3..7 |
 | `motion` |9| S2_STATUS packed bits: mode0:2, level2:3, faults5:4, L RPM9:9, R RPM18:9, L PWM27:7, R PWM34:7, L progress41:13, R progress54:13 |
 | `line` |1| L/C/R black bits0/1/2, barcode bits3..7 (0 none, 1–26 A–Z) |
+| `barcode_map` |3| Active mapping, with left0:5, right5:5, straight10:5, U-turn15:5, and tag `0xA` at 20:4. Letters use 1–26 for A–Z. |
 | `terrain` |2 (legacy) / 3| legacy height0:11, phase11:3. Current height0:11, phase11:2, maximum height13:11. Phase 3 and maximum height 2047 mean unavailable. |
 | `obstacle` |6| nearest0:12, width12:11, left23:12, right35:12. Width 2047 and side 4095 mean unavailable. Side 4094 means open. |
 | `sonar` |4| latest forward range0:12, phase12:5, failed phase17:5, detour failure22:4. Range 4094 means open and 4095 means unavailable. Reported once per second. |
 
 Bit numbering starts at the least significant bit of byte0. Fields use the firmware's little-endian packing. `offset:width` notation is used above. `mqtt_protocol.py` validates lengths, ranges and unused bits before displaying telemetry. START publishes `0x01`, STOP `0x00`, and stopped-only RESET `0x02` to `/command`, QoS0, non-retained. Strings such as `START` are not valid Pico commands.
+
+To apply a mapping, the dashboard publishes the three-byte mapping packet to `/command`, QoS0 and non-retained. The Pico reports its active mapping on `/barcode_map` once per second. The dashboard confirms the change when that report matches the submitted mapping.
 
 ## Tests
 

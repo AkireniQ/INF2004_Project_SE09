@@ -42,6 +42,7 @@ cc -std=gnu11 -Wall -Wextra -Werror -DPROHIBIT_DEF_SIZE_T -D_PICO_RP2040_ \
   -DCNF_SMP=1 -DTM_MQTT=1 -isystem include -isystem config \
   testing/subsystem5/test_controller_events.c app_program/subsystem5/s5_avoid.c \
   app_program/vehicle_controller/vehicle_core.c \
+  app_program/subsystem1/s1_wire.c \
   app_program/subsystem4/b4_{imu,event,calibration,processor,safety_dispatch,terrain_report}.c \
   -o /tmp/test_s5_controller
 /tmp/test_s5_controller

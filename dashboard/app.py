@@ -21,11 +21,13 @@ from urllib.parse import urlsplit
 import uuid
 
 from mqtt_protocol import (
-    command_payload, decode_telemetry, START_BLOCK_REPOSITION, STOP_REASON_OPERATOR, TELEMETRY_TOPICS,
+    barcode_map_payload, command_payload, decode_telemetry, START_BLOCK_REPOSITION,
+    STOP_REASON_OPERATOR, TELEMETRY_TOPICS,
 )
 
 HEARTBEAT_TIMEOUT = 15.0
 TELEMETRY_TIMEOUT = 2.0
+BARCODE_CONFIRM_TIMEOUT = 5.0
 STATIC_DIR = Path(__file__).resolve().parent / "web"
 
 
@@ -48,6 +50,7 @@ class Dashboard:
         self.heartbeat_time = None
         self.last_ack = None
         self.last_command = None
+        self.barcode_request = None
         self.error = ""
         self.events = deque(maxlen=40)
         self.sequence = 0
@@ -169,6 +172,11 @@ class Dashboard:
                 now = self.clock()
                 self.telemetry[kind] = dict(data=decoded, received_at=now,
                                             time=self.timestamp(), session_valid=True)
+                if (kind == "barcode_map" and self.barcode_request and
+                    self.barcode_request["status"] == "pending" and
+                    now <= self.barcode_request["deadline"] and
+                    decoded == self.barcode_request["mapping"]):
+                    self.barcode_request["status"] = "applied"
                 if kind == "vehicle" and (previous is None or previous['data'] != decoded):
                     self.event("vehicle", "Mission: " + decoded['state'] +
                                (" · " + ", ".join(decoded['fault_labels']) if decoded['faults'] else ""))
@@ -199,12 +207,28 @@ class Dashboard:
             reset_allowed = (link_ready and stopped and recoverable and diagnostics['reset_supported'] and
                              diagnostics['state'] in ('IDLE', 'FAULT') and not diagnostics['start_pending'] and
                              not diagnostics['stop_pending'] and not diagnostics['reset_pending'])
+            request = self.barcode_request
+            if request and request["status"] == "pending" and self.clock() > request["deadline"]:
+                request["status"] = "unconfirmed"
+            map_pending = bool(request and request["status"] == "pending")
+            barcode_map = self.telemetry['barcode_map']
+            mapping_live = (barcode_map and barcode_map['session_valid'] and
+                            self.clock() - barcode_map['received_at'] <= TELEMETRY_TIMEOUT)
+            mapping_allowed = (link_ready and mapping_live and stopped and not map_pending and
+                               max(motion['data']['left_rpm'], motion['data']['right_rpm']) <= 2 and
+                               diagnostics.get('state') in ('IDLE', 'FAULT') and
+                               diagnostics.get('motor_ready') and
+                               not any(diagnostics.get(key) for key in
+                                       ('start_pending', 'stop_pending', 'reset_pending')))
             return {
                 "broker": self.broker, "broker_port": self.broker_port, "root": self.root,
                 "broker_connected": self.broker_connected, "monitor_ready": self.monitor_ready,
-                "error": self.error, "start_allowed": bool(link_ready and not diagnostics.get('start_block')),
+                "error": self.error,
+                "start_allowed": bool(link_ready and not diagnostics.get('start_block') and not map_pending),
                 "stop_allowed": self.broker_connected,
                 "reset_allowed": bool(reset_allowed),
+                "barcode_map_allowed": bool(mapping_allowed),
+                "barcode_request": {"mapping": request["mapping"], "status": request["status"]} if request else None,
                 "pico": {"fresh": fresh, "age": age, "time": self.heartbeat_time,
                          "hex": None if self.last_status is None else f"{flags:02X}",
                          "wifi": bool(flags & 1), "mqtt": bool(flags & 2),
@@ -230,6 +254,8 @@ class Dashboard:
             if self.client is None or not state["broker_connected"]:
                 raise CommandUnavailable("Broker is disconnected. No command was queued.")
             if command == "start" and not state["start_allowed"]:
+                if state["barcode_request"] and state["barcode_request"]["status"] == "pending":
+                    raise CommandUnavailable("Wait for the Pico to confirm the barcode mapping.")
                 controller = state["telemetry"]["controller"]
                 if controller["fresh"] and controller["data"]["start_block"]:
                     raise CommandUnavailable(controller["data"]["start_block_label"])
@@ -243,6 +269,19 @@ class Dashboard:
                                  "time": self.timestamp()}
             self.event("command", command.upper() + " queued for broker (" + payload.hex().upper() + ")")
             return self.last_command.copy()
+
+    def send_barcode_map(self, mapping):
+        payload = barcode_map_payload(mapping)
+        with self.lock:
+            state = self.snapshot()
+            if self.client is None or not state["barcode_map_allowed"]:
+                raise CommandUnavailable("Wait for live mapping data and stop the car before applying changes.")
+            result = self.client.publish(self.root + "/command", payload, qos=0, retain=False)
+            if result.rc != 0:
+                raise CommandUnavailable("MQTT did not queue the barcode mapping.")
+            self.barcode_request = dict(mapping=mapping.copy(), status="pending",
+                                        deadline=self.clock() + BARCODE_CONFIRM_TIMEOUT)
+            return {"barcode_request": {"mapping": mapping, "status": "pending"}}
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -306,7 +345,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.local_request():
             return
-        if urlsplit(self.path).path != "/api/command":
+        path = urlsplit(self.path).path
+        if path not in ("/api/command", "/api/barcode-map"):
             self.json_response(404, {"error": "Not found"})
             return
         if not hmac.compare_digest(self.headers.get("X-Dashboard-Token", "").encode("utf-8"), self.server.csrf.encode("ascii")):
@@ -321,9 +361,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 raise ValueError("Invalid command size")
             self.connection.settimeout(5)
             data = json.loads(self.rfile.read(length))
-            if not isinstance(data, dict) or set(data) != {"command"} or data["command"] not in ("start", "stop", "reset"):
-                raise ValueError("Command must be start, stop or reset")
-            result = self.server.dashboard.send(data["command"])
+            if path == "/api/barcode-map":
+                result = self.server.dashboard.send_barcode_map(data)
+            else:
+                if not isinstance(data, dict) or set(data) != {"command"} or data["command"] not in ("start", "stop", "reset"):
+                    raise ValueError("Command must be start, stop or reset")
+                result = self.server.dashboard.send(data["command"])
         except CommandUnavailable as exc:
             self.json_response(503, {"error": str(exc)})
         except (ValueError, TypeError, TimeoutError) as exc:

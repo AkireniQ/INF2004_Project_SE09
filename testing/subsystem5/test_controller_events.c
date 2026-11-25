@@ -1,6 +1,7 @@
 /* Host exercise of the production dispatcher with a simulated motion owner. */
 #include <assert.h>
 #include <stdio.h>
+#include "../../app_program/subsystem1/s1_wire.h"
 #include "../../app_program/subsystem4/b4_safety_dispatch.h"
 #include "../../app_program/subsystem4/b4_terrain_report.h"
 #include "../../app_program/vehicle_controller/vehicle_controller.c"
@@ -268,7 +269,43 @@ static void begin_junction(unsigned decoded)
 
 static void test_barcode_junction(void)
 {
-    begin_junction('F' - 'A' + 1);
+    vehicle_request_stop();
+    work();
+    motor_stopped();
+    work();
+    BARCODE_MAP map;
+    assert(vehicle_get_barcode_map(&map));
+    assert(map.left == 1 && map.right == 6 && map.straight == 4 && map.uturn == 3);
+    const unsigned char configured[] = {0x1A, 0xA7, 0xAC}; /* Z/X/I/Y */
+    const unsigned char bad_tag[] = {0x1A, 0xA7, 0x0C};
+    const unsigned char duplicate[] = {0x5A, 0xA7, 0xAC}; /* Z/Z/I/Y */
+    assert(!s1_decode_barcode_map(bad_tag, sizeof(bad_tag), &map));
+    assert(!s1_decode_barcode_map(duplicate, sizeof(duplicate), &map));
+    assert(!s1_decode_barcode_map(configured, sizeof(configured) - 1u, &map));
+    assert(s1_decode_barcode_map(configured, sizeof(configured), &map));
+    assert(map.left == 26 && map.right == 24 && map.straight == 9 && map.uturn == 25);
+    assert(vehicle_set_barcode_map(map));
+    unsigned char reported[S1_BARCODE_MAP_BYTES];
+    assert(vehicle_get_barcode_map(&map) && s1_wire_barcode_map(reported, map));
+    for (unsigned i = 0; i < sizeof(reported); ++i) assert(reported[i] == configured[i]);
+
+    model = (VC_MODEL){.state = VC_FOLLOW_LINE};
+    pending = (__typeof__(pending)){0};
+    junction_sample(0, 0, 26, 10);
+    assert(pending.barcode_armed == VC_NAV_LEFT);
+    assert(!vehicle_set_barcode_map((BARCODE_MAP){1, 2, 3, 4}));
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    junction_sample(0, 0, 1, 10);
+    assert(pending.barcode_armed == VC_NAV_LEFT); /* Old default A is unassigned now. */
+    junction_sample(0, 0, 9, 10);
+    assert(pending.barcode_armed == VC_NAV_NONE);
+    for (unsigned i = 0; i < 3; ++i) junction_sample(850, 850, 0, 10);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !queued_command); /* Straight keeps tracking. */
+    vehicle_request_stop();
+    work();
+
+    begin_junction(24);
     assert(queued_command >> 4 == 2u * (90u + VC_JUNCTION_SEARCH_DEG) + 1u);
     motor_acknowledge(S2_REPLY_OK);
     work();
@@ -290,11 +327,11 @@ static void test_barcode_junction(void)
     junction_sample(0, 0, 0, 240);
     assert(vehicle_state() == VC_FOLLOW_LINE && !queued_command);
     junction_sample(0, 0, 0, 10);
-    assert(queued_command && data.barcode == 6u);
+    assert(queued_command && data.barcode == 24u);
     vehicle_request_stop();
     work();
 
-    begin_junction('A' - 'A' + 1);
+    begin_junction(26);
     assert(queued_command >> 4 == 2u * (90u + VC_JUNCTION_SEARCH_DEG));
     motor_acknowledge(S2_REPLY_OK);
     work();
@@ -312,7 +349,7 @@ static void test_barcode_junction(void)
     assert(vehicle_state() == VC_FAULT && model.reason == VC_REASON_BARCODE_LINE &&
            model.reposition_required && !queued_command);
 
-    begin_junction('C' - 'A' + 1);
+    begin_junction(25);
     assert(queued_command >> 4 == 2u * (180u + VC_JUNCTION_SEARCH_DEG) + 1u);
     motor_acknowledge(S2_REPLY_OK);
     work();
@@ -321,7 +358,7 @@ static void test_barcode_junction(void)
     assert(vehicle_state() == VC_IDLE && model.reposition_required && !queued_command);
     motor_stopped();
     work();
-    puts("PASS barcode junction centres the axle, confirms tape and bounds the search");
+    puts("PASS configured barcode commands, stopped-only mapping, and bounded tape recovery");
 }
 
 int main(void)

@@ -151,6 +151,6 @@ class TelemetryTests(unittest.TestCase):
         client=SimpleNamespace(subscribe=lambda topics:(result.extend(topics) or (0,1)))
         self.d.on_connect(client,None,None,SimpleNamespace(is_failure=False),None)
         self.assertEqual({topic.rsplit('/',1)[-1] for topic,qos in result},
-                         {'status','ack','motion','line','terrain','obstacle','vehicle','controller','sonar'})
+                         {'status','ack','motion','line','terrain','obstacle','vehicle','controller','sonar','barcode_map'})
 
 if __name__=='__main__':unittest.main()
