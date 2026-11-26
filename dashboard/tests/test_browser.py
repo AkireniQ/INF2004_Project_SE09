@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -40,7 +41,7 @@ def main():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    log = open("/tmp/buddy1-dashboard-broker.log", "w")
+    log = tempfile.TemporaryFile()
     broker = subprocess.Popen([broker_binary, "-p", str(port)], stdout=log, stderr=log)
     server = fixture = dashboard = None
     try:
@@ -83,7 +84,7 @@ def main():
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             http_port = sock.getsockname()[1]
-        cli_log = open("/tmp/buddy1-dashboard-cli.log", "w")
+        cli_log = tempfile.TemporaryFile(mode="w+")
         cli = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parents[1] / "app.py"),
                                 "--broker-port", str(port), "--port", str(http_port)],
                                stdin=subprocess.PIPE, stdout=cli_log, stderr=cli_log, text=True)
@@ -127,8 +128,10 @@ def main():
             assert page.locator("#stop").is_enabled()
             assert page.locator(".telemetry-card").count() == 5
             expect(page.locator("#terrain-height")).to_have_text("—")
-            expect(page.locator("#terrain-max-height")).to_have_text("—")
-            expect(page.locator("#obstacle-freshness")).to_have_text("No data")
+            expect(page.locator("#obstacle-status")).to_have_text("Unavailable")
+            assert page.locator("#line-card #barcode-map-form").count() == 1
+            assert page.locator("#barcode").bounding_box()["y"] < page.locator("#barcode-map-form").bounding_box()["y"]
+            assert page.locator("#controller-detail, #ir-age, #left-progress, #centre-ir, #terrain-max-height, #terrain-phase, #events, .page-note").count() == 0
             assert page.locator(".connection-strip, .control-card, .heartbeat-card").count() == 3
             print("PASS browser: controls, heartbeat, all five telemetry cards and missing-data placeholders render")
             print("PASS browser: retained status does not enable START; connected STOP remains available")
@@ -151,10 +154,11 @@ def main():
             fixture.publish(root + "/vehicle", b"\x01").wait_for_publish(timeout=5)
             for sample in range(24):
                 fixture.publish(root + "/motion", motion_packet(left=28 + sample % 5, right=22 + sample % 4)).wait_for_publish(timeout=5)
-            fixture.publish(root + "/motion", motion_packet()).wait_for_publish(timeout=5)
+            fixture.publish(root + "/motion", motion_packet(compact=True)).wait_for_publish(timeout=5)
             fixture.publish(root + "/line", bytes([1 | (2 << 3)])).wait_for_publish(timeout=5)
-            fixture.publish(root + "/terrain", (125 | (2 << 11)).to_bytes(2, "little")).wait_for_publish(timeout=5)
+            fixture.publish(root + "/terrain", (125 | (3 << 11)).to_bytes(2, "little")).wait_for_publish(timeout=5)
             fixture.publish(root + "/obstacle", (500 | (80 << 12) | (200 << 23) | (300 << 35)).to_bytes(6, "little")).wait_for_publish(timeout=5)
+            fixture.publish(root + "/sonar", (4094).to_bytes(4, "little")).wait_for_publish(timeout=5)
             expect(page.locator("#mission-state")).to_have_text("FOLLOW LINE")
             expect(page.locator("#left-rpm")).to_have_text("30")
             expect(page.locator("#right-rpm")).to_have_text("24")
@@ -162,20 +166,24 @@ def main():
             expect(page.locator("#left-ir")).to_have_text("Black detected")
             expect(page.locator("#right-ir")).to_have_text("No black")
             expect(page.locator("#barcode")).to_have_text("B")
+            assert int(page.locator("#barcode").evaluate("el => parseFloat(getComputedStyle(el).fontSize)")) >= 52
             expect(page.locator("#terrain-height")).to_have_text("125")
-            expect(page.locator("#terrain-phase")).to_have_text("Descending")
             fixture.publish(root + "/terrain", bytes.fromhex("16 b8 04")).wait_for_publish(timeout=5)
             expect(page.locator("#terrain-height")).to_have_text("22")
-            expect(page.locator("#terrain-max-height")).to_have_text("37 mm")
-            expect(page.locator("#terrain-phase")).to_have_text("Unavailable")
-            expect(page.locator("#obstacle-nearest")).to_have_text("500 mm")
+            expect(page.locator("#obstacle-status")).to_have_text("Not detected")
+            expect(page.locator("#obstacle-width")).to_have_text("80 mm")
+            fixture.publish(root + "/obstacle", bytes.fromhex("ff 17")).wait_for_publish(timeout=5)
+            expect(page.locator("#obstacle-status")).to_have_text("Detected")
+            expect(page.locator("#obstacle-width")).to_have_text("—")
+            fixture.publish(root + "/obstacle", bytes.fromhex("50 10")).wait_for_publish(timeout=5)
+            expect(page.locator("#obstacle-width")).to_have_text("80 mm")
             assert page.locator("#left-rpm-path").get_attribute("d")
             print("PASS end-to-end telemetry: all five binary topics decoded over real broker, HTTP and browser")
             # Specific START rejection is surfaced without bypassing Pico guards.
             diag = bytearray(25);diag[0]=1;diag[3]=7;diag[4]=1|2|4|64;diag[24]=7
             diag[6:8]=(900).to_bytes(2,"little");diag[10:12]=(850).to_bytes(2,"little")
             fixture.publish(root + "/controller",diag).wait_for_publish(timeout=5)
-            expect(page.locator("#start-blocker")).to_have_text("Junction / line stop latched")
+            expect(page.locator("#pico-description")).to_have_text("Junction / line stop latched")
             expect(page.locator("#pico-state")).to_have_text("START blocked by controller")
             assert page.locator("#start").is_disabled() and page.locator("#stop").is_enabled()
             fixture.publish(root + "/ack",b"\x03").wait_for_publish(timeout=5)
@@ -183,10 +191,9 @@ def main():
             diag[3]=0;diag[4]=1|2|64
             fixture.publish(root + "/controller",diag).wait_for_publish(timeout=5)
             expect(page.locator("#start")).to_be_enabled()
-            print("PASS diagnostics: specific START blocker, IR values, disabled START and preserved STOP; clearing blocker enables retry")
-            fault_diag=bytearray(31);fault_diag[0]=2;fault_diag[1]=5;fault_diag[3]=3;fault_diag[4]=1|2|64;fault_diag[5]=2
-            fault_diag[25:29]=(12000).to_bytes(4,"little");fault_diag[29:31]=(15000).to_bytes(2,"little")
-            fault_motor=bytearray(motion_packet(2));fault_motor[0]&=~3
+            print("PASS diagnostics: specific START blocker, disabled START and preserved STOP; clearing blocker enables retry")
+            fault_diag = bytes.fromhex("03 05 04 03 01 02 03 e0 2e 00 00 98 3a")
+            fault_motor=bytearray(motion_packet(2, compact=True));fault_motor[0]&=~3
             fixture.publish(root+"/controller",fault_diag).wait_for_publish(timeout=5)
             fixture.publish(root+"/motion",fault_motor).wait_for_publish(timeout=5)
             fixture.publish(root+"/vehicle",bytes([5|(1<<3)])).wait_for_publish(timeout=5)
@@ -228,6 +235,8 @@ def main():
             print("PASS barcode mapping: duplicate validation, binary MQTT update, and confirmation from the active report")
             fixture.publish(root+"/vehicle",b"\x01").wait_for_publish(timeout=5)
             fixture.publish(root+"/motion",motion_packet()).wait_for_publish(timeout=5)
+            fixture.publish(root+"/line",bytes([1 | (2 << 3)])).wait_for_publish(timeout=5)
+            fixture.publish(root+"/obstacle",bytes.fromhex("50 10")).wait_for_publish(timeout=5)
             # Fresh signal for a representative desktop screenshot.
             fixture.publish(root + "/status", b"\x07", qos=0, retain=True).wait_for_publish(timeout=5)
             page.wait_for_timeout(1100)
@@ -239,6 +248,7 @@ def main():
             clock_offset[0] = 3.0
             expect(page.locator("#motion-freshness")).to_contain_text("Stale")
             expect(page.locator("#terrain-freshness")).to_contain_text("Stale")
+            expect(page.locator("#obstacle-status")).to_have_text("Unavailable")
             expect(page.locator("#mission-description")).to_contain_text("Last report only")
             assert page.locator("#start").is_enabled()  # Heartbeat does not refresh measurements.
             fixture.publish(root + "/motion", motion_packet(4)).wait_for_publish(timeout=5)

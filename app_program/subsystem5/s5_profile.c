@@ -219,6 +219,8 @@ S5_PROFILE s5_profile(const S5_SCAN *scan, unsigned first, unsigned last, unsign
         .right_mm = right.clearance,
         .left_path_mm = S5_UNKNOWN_RANGE,
         .right_path_mm = S5_UNKNOWN_RANGE,
+        .left_outward_mm = S5_UNKNOWN_RANGE,
+        .right_outward_mm = S5_UNKNOWN_RANGE,
         .left_clipped = left.last_hit == 0,
         .right_clipped = right.last_hit == S5_SCAN_POINTS - 1,
     };

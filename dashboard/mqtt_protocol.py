@@ -50,8 +50,8 @@ def barcode_map_payload(mapping):
     return word.to_bytes(3, 'little')
 
 def decode_telemetry(kind, payload):
-    sizes = dict(vehicle=(1,), motion=(9,), line=(1,), terrain=(2, 3),
-                 obstacle=(6,), controller=(25, 31), sonar=(4,), barcode_map=(3,))
+    sizes = dict(vehicle=(1,), motion=(6, 9), line=(1,), terrain=(2, 3),
+                 obstacle=(2, 6), controller=(13, 25, 31), sonar=(4,), barcode_map=(3,))
     if len(payload) not in sizes.get(kind, ()):
         raise ValueError('Incorrect binary telemetry length')
     word = int.from_bytes(payload, 'little')
@@ -62,11 +62,16 @@ def decode_telemetry(kind, payload):
             raise ValueError('Invalid barcode mapping')
         return dict(zip(BARCODE_ACTIONS, (chr(ord('A') + letter - 1) for letter in letters)))
     if kind == 'controller':
-        if (payload[0],len(payload)) not in ((1,25),(2,31)) or payload[1] >= len(STATES) or payload[2] >= len(STOP_REASONS) or payload[3] > 8 or payload[24] > 8 or (payload[0]==1 and payload[4] & 128) or payload[5] > 15:
+        version = payload[0]
+        if (version, len(payload)) not in ((1, 25), (2, 31), (3, 13)):
             raise ValueError('Invalid controller diagnostics')
-        raw = [int.from_bytes(payload[i:i+2], 'little') for i in (6,8,10)]
-        if max(raw)>1000 or max(payload[12:14])>126 or any(x%2 for x in payload[12:14]):
-            raise ValueError('Invalid controller sensor or target range')
+        reject_offset = 6 if version == 3 else 24
+        flags = payload[4]
+        # The compact version keeps motor ready and the three pending flags.
+        invalid_flags = {1: 0x80, 2: 0, 3: 0x4e}[version]
+        if (payload[1] >= len(STATES) or payload[2] >= len(STOP_REASONS) or
+                payload[3] > 8 or payload[reject_offset] > 8 or flags & invalid_flags or payload[5] > 15):
+            raise ValueError('Invalid controller diagnostics')
         blocks = ('Ready for START', 'Motor startup not ready', 'Wi-Fi/MQTT not ready',
                   'Motor fault latched', 'STOP / reset pending', 'No valid IR readings',
                   'IR readings are stale', 'Junction / line stop latched', 'Car must be put back on the tape')
@@ -78,24 +83,27 @@ def decode_telemetry(kind, payload):
                  'The sensor task is not supplying fresh data; inspect USB serial.',
                  'Place the car on a straight away from crossings, then restart the Pico. The junction test remains halted until restart.',
                  'Place the car on a straight section of tape before retrying START.')
-        age = int.from_bytes(payload[14:16], 'little')
-        return dict(state=STATES[payload[1]], stop_reason=payload[2], stop_reason_label=STOP_REASONS[payload[2]],
-                    start_block=payload[3],
-                    start_block_label=blocks[payload[3]], start_hint=hints[payload[3]],
-                    motor_ready=bool(payload[4]&1), line_valid=bool(payload[4]&2),
-                    line_stop=bool(payload[4]&4), obstacle_blocked=bool(payload[4]&8),
-                    start_pending=bool(payload[4]&16), stop_pending=bool(payload[4]&32),
-                    link_ready=bool(payload[4]&64), motor_faults=payload[5],
-                    left_dark=raw[0], centre_dark=raw[1], right_dark=raw[2],
-                    left_target_rpm=payload[12], right_target_rpm=payload[13],
-                    line_age_ms=None if age==65535 else age,
-                    uptime_ms=int.from_bytes(payload[16:20],'little'),
-                    telemetry_drops=int.from_bytes(payload[20:24],'little'),
-                    last_start_reject=payload[24], last_reject_label=blocks[payload[24]],
-                    last_reject_hint=hints[payload[24]], reset_supported=payload[0]>=2,
-                    reset_pending=bool(payload[4]&128),
-                    timing_gap_us=int.from_bytes(payload[25:29],'little') if payload[0]>=2 else None,
-                    timing_limit_us=int.from_bytes(payload[29:31],'little') if payload[0]>=2 else None)
+        rejected = payload[reject_offset]
+        gap_offset = reject_offset + 1
+        report = dict(state=STATES[payload[1]], stop_reason=payload[2], stop_reason_label=STOP_REASONS[payload[2]],
+                      start_block=payload[3], start_block_label=blocks[payload[3]], start_hint=hints[payload[3]],
+                      motor_ready=bool(flags & 1), start_pending=bool(flags & 16), stop_pending=bool(flags & 32),
+                      motor_faults=payload[5], last_start_reject=rejected, last_reject_label=blocks[rejected],
+                      last_reject_hint=hints[rejected], reset_supported=version >= 2, reset_pending=bool(flags & 128),
+                      timing_gap_us=int.from_bytes(payload[gap_offset:gap_offset+4], 'little') if version >= 2 else None,
+                      timing_limit_us=int.from_bytes(payload[gap_offset+4:gap_offset+6], 'little') if version >= 2 else None)
+        if version < 3:
+            raw = [int.from_bytes(payload[i:i+2], 'little') for i in (6, 8, 10)]
+            if max(raw) > 1000 or max(payload[12:14]) > 126 or any(x % 2 for x in payload[12:14]):
+                raise ValueError('Invalid controller sensor or target range')
+            age = int.from_bytes(payload[14:16], 'little')
+            report.update(line_valid=bool(flags & 2), line_stop=bool(flags & 4), obstacle_blocked=bool(flags & 8),
+                          link_ready=bool(flags & 64), left_dark=raw[0], centre_dark=raw[1], right_dark=raw[2],
+                          left_target_rpm=payload[12], right_target_rpm=payload[13],
+                          line_age_ms=None if age == 65535 else age,
+                          uptime_ms=int.from_bytes(payload[16:20], 'little'),
+                          telemetry_drops=int.from_bytes(payload[20:24], 'little'))
+        return report
     if kind == 'vehicle':
         state, faults = bits(0, 3), bits(3, 5)
         if state >= len(STATES): raise ValueError('Unknown vehicle state')
@@ -104,10 +112,12 @@ def decode_telemetry(kind, payload):
     if kind == 'motion':
         fields = dict(mode=bits(0, 2), speed_level=bits(2, 3), faults=bits(5, 4),
                       left_rpm=bits(9, 9), right_rpm=bits(18, 9),
-                      left_pwm=bits(27, 7), right_pwm=bits(34, 7),
-                      left_progress=bits(41, 13), right_progress=bits(54, 13))
-        if word >> 67 or fields['speed_level'] > 4 or max(fields['left_rpm'], fields['right_rpm']) > 300 or max(fields['left_pwm'], fields['right_pwm']) > 100:
+                      left_pwm=bits(27, 7), right_pwm=bits(34, 7))
+        legacy = len(payload) == 9
+        if word >> (67 if legacy else 41) or fields['speed_level'] > 4 or max(fields['left_rpm'], fields['right_rpm']) > 300 or max(fields['left_pwm'], fields['right_pwm']) > 100:
             raise ValueError('Invalid motion range or reserved bits')
+        if legacy:
+            fields.update(left_progress=bits(41, 13), right_progress=bits(54, 13))
         fields['mode_name'] = MOTOR_MODES[fields['mode']]
         fields['fault_labels'] = [label for bit, label in MOTOR_FAULTS if fields['faults'] & bit]
         return fields
@@ -142,6 +152,11 @@ def decode_telemetry(kind, payload):
         return dict(forward_mm='Open' if forward == 4094 else None if forward == 4095 else forward,
                     phase=AVOIDANCE_PHASES[phase], failed_phase=AVOIDANCE_PHASES[failed_phase],
                     failure=AVOIDANCE_FAILURES[failure])
+    if len(payload) == 2:
+        width, status = bits(0, 11), bits(11, 2)
+        if word >> 13 or status == 3 or (width > 2000 and width != 2047):
+            raise ValueError('Invalid obstacle payload')
+        return dict(detected=(None, False, True)[status], width_mm=None if width == 2047 else width)
     fields = dict(nearest_mm=bits(0, 12), width_mm=bits(12, 11),
                   left_mm=bits(23, 12), right_mm=bits(35, 12))
     if (word >> 47 or fields['nearest_mm'] > 4000 or

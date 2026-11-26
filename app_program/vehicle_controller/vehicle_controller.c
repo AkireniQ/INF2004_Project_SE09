@@ -518,8 +518,6 @@ static S5_MOTION drive_feedback(const S2_STATUS *status, const S2_REPLY *reply,
     }
     if (!matched || !reply->accepted) return S5_MOTION_FAILED;
     if (busy) return S5_MOTION_PENDING;
-    if ((drive.command & 15u) == S2_ARC)
-        return s2_core_arc_finished((drive.command >> 4) != 0, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
     if ((drive.command & 15u) == S2_CRAWL_PIVOT)
         return s2_core_pivot_reached(drive.command >> 5, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
     return s2_core_maneuver_finished(drive.command >> 4, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
@@ -550,7 +548,7 @@ static void submit_output(const VC_INPUT *in, const VC_OUTPUT *out, const S2_REP
         else if (action == S5_ADVANCE)
             submitted = motion_maneuver(out->maneuver.distance_mm, false, &drive.command);
         else
-            submitted = motion_arc(action == S5_ARC_RIGHT, &drive.command);
+            submitted = motion_crawl_pivot(S5_PIVOT_DEG, action == S5_PIVOT_RIGHT, &drive.command);
         drive.velocity = false;
     } else {
         bool refresh = !drive.moving || in->avoidance.now - drive.refreshed >= VC_REFRESH_MS;
@@ -579,7 +577,7 @@ static const char *const avoidance_phase_name[] = {
     [S5_PASS] = "passing obstacle",
     [S5_TURN_IN] = "turning toward original line",
     [S5_FIND_LINE] = "searching for the line",
-    [S5_CENTER_LINE] = "positioning for the final arc",
+    [S5_CENTER_LINE] = "positioning for the final pivot",
     [S5_ALIGN_LINE] = "realigning with the line",
     [S5_COMPLETE] = "avoidance complete, resuming line following",
     [S5_FAILED] = "detour stopped",
@@ -775,9 +773,9 @@ static TMO vehicle_service_once(void)
     }
     if (out.maneuver.action == S5_RESCAN)
         tm_printf((UB*)"[S5] scan inconclusive, retrying while stopped\n");
-    if (!dispatch_failed && (out.maneuver.action == S5_ARC_LEFT || out.maneuver.action == S5_ARC_RIGHT))
-        tm_printf((UB*)"[S5] commanding %u deg rolling turn %s\n", S2_ARC_ANGLE_DEG,
-                  out.maneuver.action == S5_ARC_LEFT ? "left" : "right");
+    if (!dispatch_failed && (out.maneuver.action == S5_PIVOT_LEFT || out.maneuver.action == S5_PIVOT_RIGHT))
+        tm_printf((UB*)"[S5] commanding %u deg pivot %s\n", S5_PIVOT_DEG,
+                  out.maneuver.action == S5_PIVOT_LEFT ? "left" : "right");
     if (previous != phase) {
         tm_printf((UB*)"[S5] avoidance phase=%u side=%u at %u ms: %s\n",
                   (unsigned)phase, side, (unsigned)now, avoidance_phase_name[phase]);
@@ -785,7 +783,7 @@ static TMO vehicle_service_once(void)
             tm_printf((UB*)"[S5] planned bypass %s, sideways target=%u mm, straight pass=%u mm\n",
                       side == S5_LEFT ? "T (left)" : "R (right)", offset, pass);
         if (phase == S5_CENTER_LINE)
-            tm_printf((UB*)"[S5] tape crossings left=%u mm right=%u mm, final arc starts at %u mm\n",
+            tm_printf((UB*)"[S5] tape crossings left=%u mm right=%u mm, final pivot starts at %u mm\n",
                       left_entry, right_entry, align_at);
         if (phase == S5_FAILED || phase == S5_WAIT_PATH)
             tm_printf((UB*)"[S5] stopped during %s, detour reason=%u vehicle reason=%u, "

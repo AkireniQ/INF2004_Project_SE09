@@ -11,8 +11,14 @@
 #define S1_FAULT_NO_ECHO 8u
 #define S1_FAULT_WIFI 16u
 #define S1_WIDTH_UNAVAILABLE 2047u
-#define S1_CLEARANCE_OPEN 4094u
-#define S1_CLEARANCE_UNAVAILABLE 4095u
+#define S1_TERRAIN_BYTES 2u
+#define S1_OBSTACLE_BYTES 2u
+
+typedef enum {
+    S1_OBSTACLE_UNKNOWN,
+    S1_OBSTACLE_CLEAR,
+    S1_OBSTACLE_DETECTED
+} S1_OBSTACLE_STATUS;
 
 /* v2 commands: one octet. 00 STOP, 01 START, 02 stopped-only RESET.
  * Exactly one byte; values above2 are invalid. No text payloads. */
@@ -24,7 +30,6 @@ int s1_decode_barcode_map(const unsigned char *data, unsigned length, BARCODE_MA
 void s1_wire_put(unsigned char *bytes, unsigned bit, unsigned count, unsigned value);
 unsigned s1_wire_get(const unsigned char *bytes, unsigned bit, unsigned count);
 int s1_wire_line(unsigned char out[1], unsigned ir, unsigned barcode);
-int s1_wire_terrain(unsigned char out[3], unsigned height_mm, unsigned max_height_mm, unsigned phase);
-int s1_wire_obstacle(unsigned char out[6], unsigned nearest_mm, unsigned width_mm,
-                     unsigned left_mm, unsigned right_mm);
+int s1_wire_terrain(unsigned char out[S1_TERRAIN_BYTES], unsigned height_mm);
+int s1_wire_obstacle(unsigned char out[S1_OBSTACLE_BYTES], S1_OBSTACLE_STATUS status, unsigned width_mm);
 #endif

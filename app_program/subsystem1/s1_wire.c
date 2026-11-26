@@ -61,34 +61,20 @@ int s1_wire_line(unsigned char out[1], unsigned ir, unsigned barcode)
     return 1;
 }
 
-int s1_wire_terrain(unsigned char out[3], unsigned height_mm, unsigned max_height_mm, unsigned phase)
+int s1_wire_terrain(unsigned char out[S1_TERRAIN_BYTES], unsigned height_mm)
 {
-    if (out == 0 || height_mm > B4_TERRAIN_HEIGHT_MAX_MM || phase > B4_TERRAIN_PHASE_UNAVAILABLE ||
-        (max_height_mm != B4_TERRAIN_HEIGHT_UNAVAILABLE &&
-         (max_height_mm < height_mm || max_height_mm > B4_TERRAIN_HEIGHT_MAX_MM))) return 0;
-    out[0] = out[1] = out[2] = 0;
-    s1_wire_put(out, 0u, 11u, height_mm);
-    s1_wire_put(out, 11u, 2u, phase);
-    s1_wire_put(out, 13u, 11u, max_height_mm);
+    if (!out || height_mm > B4_TERRAIN_HEIGHT_MAX_MM) return 0;
+    /* Reuse the two-byte layout with its phase set to unavailable. */
+    out[0] = (unsigned char)height_mm;
+    out[1] = (unsigned char)((height_mm >> 8) | (B4_TERRAIN_PHASE_UNAVAILABLE << 3));
     return 1;
 }
 
-static int valid_clearance(unsigned mm)
+int s1_wire_obstacle(unsigned char out[S1_OBSTACLE_BYTES], S1_OBSTACLE_STATUS status, unsigned width_mm)
 {
-    return mm <= 4000u || mm == S1_CLEARANCE_OPEN || mm == S1_CLEARANCE_UNAVAILABLE;
-}
-
-int s1_wire_obstacle(unsigned char out[6], unsigned nearest_mm, unsigned width_mm,
-                     unsigned left_mm, unsigned right_mm)
-{
-    unsigned i;
-    if (out == 0 || nearest_mm > 4000u ||
-        (width_mm > 2000u && width_mm != S1_WIDTH_UNAVAILABLE) ||
-        !valid_clearance(left_mm) || !valid_clearance(right_mm)) { return 0; }
-    for (i = 0; i < 6u; ++i) { out[i] = 0; }
-    s1_wire_put(out, 0u, 12u, nearest_mm);
-    s1_wire_put(out, 12u, 11u, width_mm);
-    s1_wire_put(out, 23u, 12u, left_mm);
-    s1_wire_put(out, 35u, 12u, right_mm);
+    if (!out || (unsigned)status > S1_OBSTACLE_DETECTED ||
+        (width_mm > 2000u && width_mm != S1_WIDTH_UNAVAILABLE)) return 0;
+    out[0] = (unsigned char)width_mm;
+    out[1] = (unsigned char)((width_mm >> 8) | ((unsigned)status << 3));
     return 1;
 }

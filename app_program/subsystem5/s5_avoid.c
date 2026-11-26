@@ -10,22 +10,15 @@
 #define RESCAN_RANGE_CHANGE_MM 30u
 #define PHASE_TIMEOUT_MS 9000u
 #define WHEEL_CIRCUMFERENCE_MM (WHEEL_DIAMETER_MM * 3141u / 1000u)
-#define ARC_FORWARD_MM ((S2_ARC_RADIUS_MM * 866u + 999u) / 1000u)
-#define ARC_SIDEWAYS_MM (S2_ARC_RADIUS_MM / 2u)
-#define ARC_ENTRY_MM (ARC_FORWARD_MM + S5_TURN_CLEARANCE_MM)
-#define DEPARTURE_DIAGONAL_MIN_MM 20u
-#define MIN_DEPARTURE_OFFSET_MM (2u * ARC_SIDEWAYS_MM + DEPARTURE_DIAGONAL_MIN_MM)
 #define TAPE_HALF_WIDTH_MM ((S5_TAPE_WIDTH_MM + 1u) / 2u)
-#define NEAR_IR_TAPE_OFFSET_MM ((S5_OUTER_IR_SPACING_MM + 3u) / 4u + TAPE_HALF_WIDTH_MM)
 #define REJOIN_START_CLEARANCE_MM 8u
-/* At the end of the inward arc, the nearer outer sensor projects forward
-   by the axle offset times sin(60) and sideways by half its spacing times cos(60). */
-#define MIN_REJOIN_OFFSET_MM (ARC_SIDEWAYS_MM + (S5_IR_TO_AXLE_MM * 866u + 999u) / 1000u + \
-                             NEAR_IR_TAPE_OFFSET_MM + REJOIN_START_CLEARANCE_MM)
+#define MIN_REJOIN_OFFSET_MM (S5_IR_TO_AXLE_MM + TAPE_HALF_WIDTH_MM + REJOIN_START_CLEARANCE_MM)
 #define EDGE_OFFSET_DEADBAND_MM 20u
 #define LINE_ALIGN_TOLERANCE_MM 3
 
-_Static_assert(S2_ARC_ANGLE_DEG == 60u, "Return offset projections use a 60 degree arc");
+_Static_assert(S5_PIVOT_DEG == 90u, "The straight bypass legs assume right-angle pivots");
+_Static_assert(S5_OUTWARD_CLEARANCE_BEARING_DEG == 60u,
+               "Outward clearance projects the 60-degree sonar bearing");
 _Static_assert(S5_PASS_DEPTH_PERCENT > 0u && S5_PASS_DEPTH_PERCENT <= 100u,
                "Estimated depth must be a percentage of the measured width");
 _Static_assert(S5_FOLLOW_CLEAR_MM + S5_PASS_UNCERTAIN_DEPTH_MM + S5_PASS_BODY_ALLOWANCE_MM <= S5_MAX_PASS_MM,
@@ -38,9 +31,9 @@ _Static_assert(MAX_LATERAL_OFFSET_MM <= 511u, "Lateral offset must fit in 9 bits
 _Static_assert(S5_IR_TO_AXLE_MM > 0u && S5_OUTER_IR_SPACING_MM > S5_TAPE_WIDTH_MM &&
                    MIN_REJOIN_OFFSET_MM <= MAX_LATERAL_OFFSET_MM,
                "The outer sensors must straddle the tape and fit within the bypass limit");
-_Static_assert(((MAX_LATERAL_OFFSET_MM - ARC_SIDEWAYS_MM) * 1000u + 865u) / 866u +
+_Static_assert(MAX_LATERAL_OFFSET_MM +
                    S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM <= S5_MAX_LEG_MM && S5_MAX_LEG_MM <= 1023u,
-               "Rounded search distance must fit the bounded encoder command");
+               "Tape search distance must fit the bounded encoder command");
 
 static bool at_or_after(uint32_t time, uint32_t reference)
 {
@@ -88,20 +81,10 @@ void s5_avoid_begin(S5_AVOID *state, uint32_t now)
     *state = (S5_AVOID){.phase = S5_PROFILE_PATH, .phase_at = now};
 }
 
-static unsigned diagonal_distance_mm(unsigned sideways_mm)
+static unsigned reentry_detection_mm(unsigned offset_mm)
 {
-    return (sideways_mm * 1000u + 865u) / 866u;
-}
-
-static unsigned reentry_detection_mm(unsigned nominal_travel_mm)
-{
-    unsigned margin = S5_IR_TO_AXLE_MM + diagonal_distance_mm(NEAR_IR_TAPE_OFFSET_MM) + S5_SEARCH_MARGIN_MM;
-    return nominal_travel_mm > margin ? nominal_travel_mm - margin : 0u;
-}
-
-static unsigned departure_diagonal_mm(unsigned offset_mm)
-{
-    return diagonal_distance_mm(offset_mm - 2u * ARC_SIDEWAYS_MM);
+    unsigned margin = S5_IR_TO_AXLE_MM + TAPE_HALF_WIDTH_MM + S5_SEARCH_MARGIN_MM;
+    return offset_mm > margin ? offset_mm - margin : 0u;
 }
 
 bool s5_avoid_executing(S5_PHASE phase)
@@ -134,9 +117,7 @@ static unsigned bypass_offset(int lateral_extent, bool edge_valid)
         offset = (int)(S5_SIDE_ALLOWANCE_MM + extent + S5_UNCERTAIN_EDGE_MM);
     }
     /* Leave both IR sensors on the approach side until the straight tape search. */
-    unsigned minimum = MIN_REJOIN_OFFSET_MM > MIN_DEPARTURE_OFFSET_MM ?
-                       MIN_REJOIN_OFFSET_MM : MIN_DEPARTURE_OFFSET_MM;
-    return offset > (int)minimum ? (unsigned)offset : minimum;
+    return offset > (int)MIN_REJOIN_OFFSET_MM ? (unsigned)offset : MIN_REJOIN_OFFSET_MM;
 }
 
 static unsigned side_range(unsigned heading, unsigned background, unsigned required)
@@ -151,9 +132,26 @@ static unsigned side_range(unsigned heading, unsigned background, unsigned requi
 
 static unsigned required_side_range(unsigned offset)
 {
-    unsigned diagonal_room = departure_diagonal_mm(offset) + ARC_ENTRY_MM;
-    unsigned lateral_room = offset + FRONT_MARGIN_MM + S5_MANEUVER_STOP_MM;
-    return diagonal_room > lateral_room ? diagonal_room : lateral_room;
+    return offset + FRONT_MARGIN_MM + S5_MANEUVER_STOP_MM;
+}
+
+static bool outward_probe_allowed(unsigned heading, unsigned offset)
+{
+    /* A known obstruction on departure takes priority over the outward echo. */
+    return !s5_range_available(heading) || heading >= offset + S5_TURN_CLEARANCE_MM;
+}
+
+static bool outward_observed(unsigned range)
+{
+    return range != 0 && s5_range_available(range);
+}
+
+static bool outward_route_fits(unsigned heading, unsigned outward, unsigned offset)
+{
+    /* The 60-degree reading must project beyond the chassis and side margin. */
+    unsigned lateral_room = offset + (S5_CHASSIS_WIDTH_MM + 1u) / 2u + FRONT_MARGIN_MM;
+    return outward_probe_allowed(heading, offset) && outward_observed(outward) &&
+           outward >= (lateral_room * 1000u + 865u) / 866u;
 }
 
 unsigned s5_scan_range_limit(const S5_AVOID *state)
@@ -163,11 +161,17 @@ unsigned s5_scan_range_limit(const S5_AVOID *state)
     return S5_FOLLOW_CLEAR_MM + extra;
 }
 
-static S5_BYPASS plan_bypass(const S5_PROFILE *profile, unsigned limit_mm)
+S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm)
 {
     S5_BYPASS plan = {.failure = S5_FAIL_TARGET};
     if (!s5_range_measured(profile->nearest_mm) || profile->nearest_mm > limit_mm)
         return plan;
+    /* Verify departure room before checking the sides. A fresh scan after a
+       retrace can evaluate side clearance from farther back. */
+    if (profile->front_mm < S5_TURN_CLEARANCE_MM) {
+        plan.failure = S5_FAIL_ROOM;
+        return plan;
+    }
 
     unsigned left_offset = bypass_offset(-profile->left_edge_mm, profile->left_edge_valid);
     unsigned right_offset = bypass_offset(profile->right_edge_mm, profile->right_edge_valid);
@@ -177,22 +181,23 @@ static S5_BYPASS plan_bypass(const S5_PROFILE *profile, unsigned limit_mm)
     unsigned right_path = side_range(profile->right_path_mm, profile->right_mm, right_required);
     bool left_room = !profile->left_clipped && left_offset <= MAX_LATERAL_OFFSET_MM;
     bool right_room = !profile->right_clipped && right_offset <= MAX_LATERAL_OFFSET_MM;
-    bool left = left_room && s5_range_available(left_path) && left_path >= left_required;
-    bool right = right_room && s5_range_available(right_path) && right_path >= right_required;
+    bool left = left_room && ((s5_range_available(left_path) && left_path >= left_required) ||
+                              outward_route_fits(profile->left_path_mm, profile->left_outward_mm, left_offset));
+    bool right = right_room && ((s5_range_available(right_path) && right_path >= right_required) ||
+                                outward_route_fits(profile->right_path_mm, profile->right_outward_mm, right_offset));
     if (!left && !right) {
-        if ((left_room && !s5_range_available(left_path)) ||
-            (right_room && !s5_range_available(right_path))) plan.failure = S5_FAIL_ECHO;
+        bool left_unobserved = !outward_observed(profile->left_outward_mm);
+        bool right_unobserved = !outward_observed(profile->right_outward_mm);
+        plan.probe_left = left_room && left_unobserved && outward_probe_allowed(profile->left_path_mm, left_offset);
+        plan.probe_right = right_room && right_unobserved && outward_probe_allowed(profile->right_path_mm, right_offset);
+        if ((left_room && !s5_range_available(left_path) && left_unobserved) ||
+            (right_room && !s5_range_available(right_path) && right_unobserved)) plan.failure = S5_FAIL_ECHO;
         else if (profile->left_clipped && profile->right_clipped) plan.failure = S5_FAIL_BOTH_LIMITS;
         else if (profile->left_clipped) plan.failure = S5_FAIL_LEFT_LIMIT;
         else if (profile->right_clipped) plan.failure = S5_FAIL_RIGHT_LIMIT;
         else plan.failure = left_room || right_room ? S5_FAIL_SIDE : S5_FAIL_ROOM;
         return plan;
     }
-    if (profile->front_mm < ARC_ENTRY_MM) {
-        plan.failure = S5_FAIL_ROOM;
-        return plan;
-    }
-
     /* Use right when both routes fit unless the measured left route is shorter. */
     bool shorter_left = left && profile->left_edge_valid && profile->right_edge_valid &&
                         left_offset + EDGE_OFFSET_DEADBAND_MM < right_offset;
@@ -205,7 +210,7 @@ static S5_BYPASS plan_bypass(const S5_PROFILE *profile, unsigned limit_mm)
 
 S5_BYPASS s5_plan_bypass(const S5_PROFILE *profile)
 {
-    return plan_bypass(profile, S5_FOLLOW_CLEAR_MM);
+    return s5_plan_bypass_at_range(profile, S5_FOLLOW_CLEAR_MM);
 }
 
 static S5_AVOID_OUTPUT advance(unsigned distance_mm)
@@ -253,19 +258,14 @@ static S5_AVOID_OUTPUT find_tape(S5_AVOID *state, const S5_AVOID_INPUT *in, bool
         unsigned left = state->left_edge.entry_mm;
         unsigned right = state->right_edge.entry_mm;
         unsigned separation = left > right ? left - right : right - left;
-        /* The mounting can shift which sensor crosses first. The mean still
-           locates the stripe when the two observations are distinct and close. */
-        if (!separation || separation > diagonal_distance_mm(S5_CHASSIS_WIDTH_MM / 2u))
+        /* Both sensors can reach the leading edge together on a perpendicular approach. */
+        if (separation > S5_OUTER_IR_SPACING_MM)
             return fail(state, S5_FAIL_LINE, in->now);
-        /* Averaging the entries cancels the side offsets of the front sensors.
-           Move from the leading edge to the stripe centre, compensate for the
-           sensor-to-axle distance, and reserve the final arc's lateral travel. */
-        unsigned stripe_center_mm = (left + right + 1u) / 2u + diagonal_distance_mm(TAPE_HALF_WIDTH_MM);
-        int turn_start_mm = (int)(stripe_center_mm + S5_IR_TO_AXLE_MM) -
-                            (int)diagonal_distance_mm(ARC_SIDEWAYS_MM);
-        if (turn_start_mm <= 0 || (unsigned)turn_start_mm > S5_MAX_LEG_MM)
+        /* Bring the axle over the tape before the final pivot. */
+        unsigned turn_start_mm = (left + right + 1u) / 2u + TAPE_HALF_WIDTH_MM + S5_IR_TO_AXLE_MM;
+        if (turn_start_mm > S5_MAX_LEG_MM)
             return fail(state, S5_FAIL_LINE, in->now);
-        state->align_at_mm = (unsigned)turn_start_mm;
+        state->align_at_mm = turn_start_mm;
     }
 
     /* Use the rest of the straight search move to reach the turn point.
@@ -295,7 +295,7 @@ static S5_AVOID_OUTPUT center_for_turn(S5_AVOID *state, const S5_AVOID_INPUT *in
     if (adjustment >= -LINE_ALIGN_TOLERANCE_MM && adjustment <= LINE_ALIGN_TOLERANCE_MM)
         return go(state, S5_ALIGN_LINE, in->now);
     unsigned distance = (unsigned)(adjustment < 0 ? -adjustment : adjustment);
-    unsigned limit = adjustment < 0 ? S5_SEARCH_MARGIN_MM : S5_IR_TO_AXLE_MM;
+    unsigned limit = adjustment < 0 ? S5_SEARCH_MARGIN_MM : S5_IR_TO_AXLE_MM + TAPE_HALF_WIDTH_MM;
     if (distance > limit) return fail(state, S5_FAIL_LINE, in->now);
     return (S5_AVOID_OUTPUT){.action = adjustment < 0 ? S5_REVERSE : S5_ADVANCE,
                              .distance_mm = distance};
@@ -307,7 +307,7 @@ static S5_AVOID_OUTPUT execute_route(S5_AVOID *state, const S5_AVOID_INPUT *in)
     uint32_t elapsed = in->now - state->phase_at;
     bool settled = in->stopped && elapsed >= MOTION_SETTLE_MS;
     unsigned travel = 0;
-    if (phase == S5_SHIFT_OUT) travel = state->diagonal_mm;
+    if (phase == S5_SHIFT_OUT) travel = state->offset_mm;
     else if (phase == S5_PASS) travel = state->pass_mm;
     else if (phase == S5_FIND_LINE) travel = state->search_mm;
     /* Allow nominal travel at line-follow speed plus time to settle and accelerate. */
@@ -321,7 +321,7 @@ static S5_AVOID_OUTPUT execute_route(S5_AVOID *state, const S5_AVOID_INPUT *in)
         if (!settled) return wait;
         if (in->line_junction) return fail(state, S5_FAIL_LINE, in->now);
         /* After a measured crossing, the line follower can correct a tape
-           edge that is still under one outer sensor after the final arc. */
+           edge that is still under one outer sensor after the final pivot. */
         bool at_tracking_position = in->line_centered || (in->left_on_tape != in->right_on_tape);
         observe_line(state, in, tape_edges_confirmed(state) && at_tracking_position,
                      state->phase_at + MOTION_SETTLE_MS);
@@ -345,12 +345,12 @@ static S5_AVOID_OUTPUT execute_route(S5_AVOID *state, const S5_AVOID_INPUT *in)
 
     if (!settled || in->motion != S5_MOTION_NONE) return wait;
     switch (phase) {
-    case S5_SHIFT_OUT: return advance(state->diagonal_mm);
+    case S5_SHIFT_OUT: return advance(state->offset_mm);
     case S5_PASS: return state->pass_mm ? advance(state->pass_mm) : go(state, S5_TURN_IN, in->now);
     case S5_TURN_OUT: case S5_ALIGN_OUTSIDE: case S5_TURN_IN: case S5_ALIGN_LINE: {
         bool outward = phase == S5_TURN_OUT || phase == S5_ALIGN_LINE;
         bool left = outward ? state->side == S5_LEFT : state->side == S5_RIGHT;
-        return (S5_AVOID_OUTPUT){.action = left ? S5_ARC_LEFT : S5_ARC_RIGHT};
+        return (S5_AVOID_OUTPUT){.action = left ? S5_PIVOT_LEFT : S5_PIVOT_RIGHT};
     }
     default: return fail(state, S5_FAIL_MOTION, in->now);
     }
@@ -435,21 +435,18 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
         state->range_seen = false;
         S5_PROFILE profile = in->profile;
         if (range_fresh && in->range_mm < profile.front_mm) profile.front_mm = in->range_mm;
-        S5_BYPASS plan = plan_bypass(&profile, clear_mm);
+        S5_BYPASS plan = s5_plan_bypass_at_range(&profile, clear_mm);
         if (plan.side != S5_NO_SIDE) {
             unsigned pass = s5_planned_pass_mm(&profile, range_fresh ? in->range_mm : S5_UNKNOWN_RANGE);
             if (pass > S5_MAX_PASS_MM) return wait_for_path(state, S5_FAIL_ROOM, in);
             unsigned offset = plan.offset_mm;
-            unsigned diagonal = departure_diagonal_mm(offset);
-            unsigned forward_credit = 2u * ARC_FORWARD_MM + (diagonal + 1u) / 2u;
-            unsigned return_diagonal = diagonal_distance_mm(offset - ARC_SIDEWAYS_MM);
             clear_path_failure(state);
             state->side = plan.side;
             state->offset_mm = offset;
-            state->diagonal_mm = diagonal;
-            state->pass_mm = pass > forward_credit ? pass - forward_credit : 0u;
-            state->search_mm = return_diagonal + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM;
-            state->search_after_mm = reentry_detection_mm(return_diagonal);
+            /* The sideways leg and pivots make no forward progress along the tape. */
+            state->pass_mm = pass;
+            state->search_mm = offset + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM;
+            state->search_after_mm = reentry_detection_mm(offset);
             return go(state, S5_TURN_OUT, in->now);
         }
         S5_FAILURE reason = plan.failure;

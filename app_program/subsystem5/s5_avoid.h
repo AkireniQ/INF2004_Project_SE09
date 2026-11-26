@@ -8,16 +8,18 @@
 #define S5_RANGE_MAX_AGE_MS 300u
 #define S5_SLOW_RANGE_MM 500u
 #define S5_MANEUVER_STOP_MM 150u
+#define S5_PIVOT_DEG 90u
 #define S5_PASS_BODY_ALLOWANCE_MM 160u
 #ifndef S5_PASS_DEPTH_PERCENT
-#define S5_PASS_DEPTH_PERCENT 60u
+#define S5_PASS_DEPTH_PERCENT 50u
 #endif
 #ifndef S5_PASS_UNCERTAIN_DEPTH_MM
-#define S5_PASS_UNCERTAIN_DEPTH_MM 140u
+#define S5_PASS_UNCERTAIN_DEPTH_MM 120u
 #endif
 #define S5_MAX_PASS_MM 720u
 #define S5_APPROACH_RPM 20u
 #define S5_CLEARANCE_BEARING_DEG 45u
+#define S5_OUTWARD_CLEARANCE_BEARING_DEG 60u
 #ifndef S5_CHASSIS_WIDTH_MM
 #define S5_CHASSIS_WIDTH_MM 160u /* Verify the widest point, including tyres. */
 #endif
@@ -49,7 +51,7 @@ typedef enum { S5_NO_SIDE, S5_LEFT, S5_RIGHT } S5_SIDE;
 
 typedef enum {
     S5_WAIT, S5_STOP, S5_ADVANCE, S5_REVERSE, S5_RESCAN,
-    S5_ARC_LEFT, S5_ARC_RIGHT
+    S5_PIVOT_LEFT, S5_PIVOT_RIGHT
 } S5_ACTION;
 typedef enum { S5_MOTION_NONE, S5_MOTION_QUEUED, S5_MOTION_PENDING, S5_MOTION_DONE, S5_MOTION_FAILED } S5_MOTION;
 typedef enum {
@@ -78,7 +80,7 @@ typedef struct {
     uint32_t phase_at, last_line_at, last_range_at;
     unsigned phase:5, side:2, line_samples:2, reverse_available:1;
     unsigned reverse_long:1, scan_retried:1, scan_after_retrace:1, failure:4, failed_phase:5;
-    unsigned offset_mm:10, diagonal_mm:10, pass_mm:10, search_mm:10, search_after_mm:10;
+    unsigned offset_mm:10, pass_mm:10, search_mm:10, search_after_mm:10;
     unsigned align_at_mm:10, search_progress_mm:10;
     unsigned blocked_range_mm:12, range_seen:1, search_exhausted:1;
     S5_TAPE_EDGE left_edge, right_edge;
@@ -91,9 +93,11 @@ typedef struct {
 typedef struct {
     unsigned side:2, failure:4;
     unsigned offset_mm:9;
+    unsigned probe_left:1, probe_right:1;
 } S5_BYPASS;
 
 S5_BYPASS s5_plan_bypass(const S5_PROFILE *profile);
+S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm);
 unsigned s5_scan_range_limit(const S5_AVOID *state);
 unsigned s5_planned_pass_mm(const S5_PROFILE *profile, unsigned forward_mm);
 bool s5_avoid_executing(S5_PHASE phase);

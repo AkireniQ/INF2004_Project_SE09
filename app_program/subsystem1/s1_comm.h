@@ -7,9 +7,8 @@
  * Callers own vehicle/sensor state and pass a coherent snapshot. */
 ER s1_publish_vehicle(unsigned state, unsigned fault_mask);
 ER s1_publish_line(unsigned ir_bits, unsigned barcode); /* 0 none, 1..26 A..Z */
-ER s1_publish_terrain(unsigned height_mm, unsigned max_height_mm, unsigned phase);
-ER s1_publish_obstacle(unsigned nearest_mm, unsigned width_mm,
-                       unsigned left_mm, unsigned right_mm);
+ER s1_publish_terrain(unsigned height_mm);
+ER s1_publish_obstacle(S1_OBSTACLE_STATUS status, unsigned width_mm);
 ER s1_publish_motion(void);
 void s1_publish_telemetry(void);
 unsigned s1_connection_status(void); /* bits: WiFi, broker, subscribed, TX drop, RX drop */

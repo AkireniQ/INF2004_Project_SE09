@@ -24,13 +24,12 @@ EXPORT void subsystem5_test(void)
     profile = s5_profile(&samples, S5_CENTRE_INDEX, S5_CENTRE_INDEX + 5, S5_CENTRE_INDEX, 0);
     TEST_CHECK("S5-U02", profile.width_mm == 27 && profile.width_status == S5_WIDTH_LEFT_EDGE &&
                !profile.left_edge_valid, "a partial sweep estimates the observed span");
-    unsigned char packet[6];
-    TEST_CHECK("S5-U03", s1_wire_obstacle(packet, 140, S5_UNKNOWN_WIDTH, S5_UNKNOWN_RANGE, S5_OPEN_RANGE) &&
-               s1_wire_get(packet, 12, 11) == S1_WIDTH_UNAVAILABLE &&
-               s1_wire_get(packet, 23, 12) == S1_CLEARANCE_UNAVAILABLE &&
-               s1_wire_get(packet, 35, 12) == S1_CLEARANCE_OPEN &&
-               !s1_wire_obstacle(packet, 140, 0, 0, 4001),
-               "packed scan preserves unavailable and open readings");
+    unsigned char packet[S1_OBSTACLE_BYTES];
+    TEST_CHECK("S5-U03", s1_wire_obstacle(packet, S1_OBSTACLE_DETECTED, S5_UNKNOWN_WIDTH) &&
+               s1_wire_get(packet, 0, 11) == S1_WIDTH_UNAVAILABLE &&
+               s1_wire_get(packet, 11, 2) == S1_OBSTACLE_DETECTED &&
+               !s1_wire_obstacle(packet, S1_OBSTACLE_CLEAR, 2001),
+               "obstacle detection is reported even when width is unavailable");
     S5_RANGE_GATE gate = {.range_mm = S5_UNKNOWN_RANGE, .blocked = true};
     unsigned open = s5_range_from_echo(25000);
     TEST_CHECK("S5-U04", open == S5_OPEN_RANGE && s5_range_from_echo(0) == S5_UNKNOWN_RANGE &&
