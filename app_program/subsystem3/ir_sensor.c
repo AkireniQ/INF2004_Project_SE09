@@ -3,7 +3,6 @@
 
 LOCAL ID adc_dd = 0;
 
-/* ch: 0 = GP26, 1 = GP27, 2 = GP28. Returns 0..4095, or -1 on error. */
 EXPORT INT ir_read(INT ch)
 {
     UW val = 0;

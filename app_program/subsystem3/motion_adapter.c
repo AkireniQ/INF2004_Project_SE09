@@ -1,31 +1,26 @@
 /*
  * motion_adapter.c: the ONLY file that talks to Buddy 2's Motion Control.
- * NOW (hand testing): prints the commands, only when they change.
- * LATER (sensors on the car): do the UNCOMMENT steps 1 to 3.
  */
 #include "subsystem3.h"
 
-/* UNCOMMENT (step 1 of 3) */
 #include "../subsystem2/subsystem2.h" 
 
 EXPORT void s3_motion_stop(void)
 {
     tm_printf((UB*)"[MOTION] STOP\n");
-    /* UNCOMMENT (step 2 of 3) */
     motion_stop();
 }
 
 EXPORT BOOL s3_motion_set_wheel_rpm(INT left, INT right)
 {
     LOCAL unsigned reported_fault = 0;
-    LOCAL INT pl = -1, pr = -1;           /* last printed, avoids console spam from resends */
+    LOCAL INT pl = -1, pr = -1;        
 
     if (left != pl || right != pr) {
         tm_printf((UB*)"[MOTION] target RPM L=%d R=%d\n", left, right);
         pl = left; pr = right;
     }
 
-    /* UNCOMMENT (step 3 of 3) : the whole block below */
     unsigned fault = motion_faults();
     if (fault != 0) {
         if (fault != reported_fault) {

@@ -20,7 +20,7 @@ static const C39 c39[] = {
     {'Y',"wwnnwnnnn"},{'Z',"nwwnwnnnn"},{'*',BC_SENTINEL_PATTERN}
 };
 
-/* Keep the beginning of the label while the optical contrast settles.
+/* Keeps the beginning of the label while the optical contrast settles.
    At the normal 10 ms cadence this covers the first wide black bar at
    any of the three print sizes. */
 static struct {
