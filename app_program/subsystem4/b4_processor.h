@@ -6,6 +6,7 @@
 #ifndef B4_PROCESSOR_H
 #define B4_PROCESSOR_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "b4_calibration.h"
@@ -82,8 +83,8 @@ typedef struct {
  * motor fields. Positive roll means right side up relative to startup.
  * Hump height is peak lateral separation estimated as distance*sin(roll),
  * not the directly measured hump height. The default 111 mm is the measured
- * wheel-centre spacing, not a validated height calibration; zero disables height. Measurements
- * are invalidated by bad gravity, missing/overrun samples or safety events.
+ * wheel-centre spacing, not a validated height calibration; zero disables height.
+ * A height requires a sustained right-side rise during forward tracking.
  * Acceleration and chassis dynamics can confound tilt and roll.
  * "Stationary" means stationary-like acceleration, not zero vehicle speed.
  */
@@ -122,6 +123,7 @@ typedef struct {
 	int64_t max_height_um;
 	int32_t terrain_peak_slope_cdeg;
 	uint32_t last_timestamp_ms;
+	uint32_t hump_entry_since_ms;
 	uint32_t last_mag_timestamp_ms;
 	uint32_t last_turn_event_timestamp_ms;
 	int32_t last_heading_cdeg;
@@ -172,14 +174,13 @@ B4_CALIBRATION_STATUS b4_processor_init(
 	const B4_PROCESSOR_CONFIG *config);
 
 /*
- * Process one sample. Wheel odometry is retained for API compatibility;
- * the lateral roll-based hump height does not depend on wheel speed.
+ * Process one sample. Forward tracking qualifies hump events; the height
+ * estimate itself uses roll and wheel spacing.
  */
 B4_CALIBRATION_STATUS b4_processor_update(
 	B4_PROCESSOR *processor,
 	const B4_IMU_SAMPLE *sample,
-	uint8_t speed_valid,
-	int32_t speed_mm_s,
+	bool forward_tracking,
 	B4_PROCESSOR_OUTPUT *output);
 
 #endif /* B4_PROCESSOR_H */

@@ -6,7 +6,6 @@
 #include "b4_i2c_probe.h"
 #include "b4_lsm303dlhc.h"
 #include "b4_processor.h"
-#include "b4_odometry.h"
 #include "b4_safety_dispatch.h"
 #include "b4_terrain_report.h"
 #if APP_TEST
@@ -14,7 +13,8 @@
 #endif
 #include "../subsystem1/s1_comm.h"
 #include "subsystem4.h"
-#include "../subsystem2/subsystem2.h"
+#include "../subsystem2/motion_transport.h"
+#include "../subsystem3/line_steering.h"
 #include "../vehicle_controller/vehicle_controller.h"
 
 #include <stdint.h>
@@ -36,6 +36,7 @@
 #define B4_LSM303DLHC_MAG_ID_2     0x33U
 #define B4_I2C_PROBE_PERIOD_MS     3000
 #define B4_RUNTIME_SAMPLE_PERIOD_MS TIMER_PERIOD
+#define B4_WHEEL_VELOCITY_MODE     1U
 
 #if APP_TEST
 #define B4_TEST_LOG_EVERY_SAMPLES  10U
@@ -604,6 +605,25 @@ EXPORT void b4_runtime_sample_tick(void *exinf)
 	(void)tk_wup_tsk(b4_sampler_task_id);
 }
 
+static bool b4_forward_tracking(void)
+{
+	S2_STATUS status;
+	S2_REPLY reply;
+	bool busy;
+	if (!motion_get_feedback(&status, &reply, &busy) ||
+	    s2_get_bits(&status, 0U, 2U) != B4_WHEEL_VELOCITY_MODE ||
+	    s2_get_bits(&status, 5U, 4U) != 0U || !reply.accepted ||
+	    (reply.command & 15U) != S2_WHEEL_RPM) return false;
+
+	/* Use the accepted forward targets for steering. A hump can slow one
+	   wheel, so measured speed is used only to confirm movement. */
+	unsigned left = ((reply.command >> 4) & 63U) * 2U;
+	unsigned right = (reply.command >> 10) * 2U;
+	unsigned difference = left >= right ? left - right : right - left;
+	return left != 0U && right != 0U && difference <= S3_CORRECTION_STEP_RPM &&
+	       (s2_get_bits(&status, 9U, 9U) || s2_get_bits(&status, 18U, 9U));
+}
+
 EXPORT void b4_runtime_task(INT stacd, void *exinf)
 {
 	B4_LSM303DLHC sensor = {0};
@@ -619,7 +639,6 @@ EXPORT void b4_runtime_task(INT stacd, void *exinf)
 	uint32_t max_loop_period_us = 0U;
 	uint32_t tick_wait_us = 0U;
 #endif
-	uint32_t odometry_previous_timestamp_ms = 0U;
 
 	(void)stacd;
 	(void)exinf;
@@ -692,36 +711,13 @@ EXPORT void b4_runtime_task(INT stacd, void *exinf)
 #endif
 		if ((read_status == B4_LSM303DLHC_STATUS_OK) &&
 		    (sample.flags != 0U)) {
-			uint8_t speed_valid = 0U;
-			int32_t speed_mm_s = 0;
-			S2_STATUS motion_status;
-			uint32_t elapsed_ms = 0U;
-
-			if (odometry_previous_timestamp_ms != 0U) {
-				elapsed_ms = sample.timestamp_ms -
-					odometry_previous_timestamp_ms;
-			}
-			odometry_previous_timestamp_ms = sample.timestamp_ms;
-
-			if (motion_get_status(&motion_status)) {
-				uint16_t mode = (uint16_t)s2_get_bits(&motion_status, 0U, 2U);
-				uint16_t faults = (uint16_t)s2_get_bits(&motion_status, 5U, 4U);
-				uint16_t left_rpm = (uint16_t)s2_get_bits(&motion_status, 9U, 9U);
-				uint16_t right_rpm = (uint16_t)s2_get_bits(&motion_status, 18U, 9U);
-				B4_ODOMETRY_STATUS odometry_status = b4_odometry_validate(
-					mode, faults, left_rpm, right_rpm,
-					/* Controlled hump test: wheel direction is forward-only. */
-					1U, elapsed_ms, &speed_mm_s);
-				if (odometry_status == B4_ODOMETRY_VALID) {
-					speed_valid = 1U;
-				}
-			}
+			bool forward_tracking = (sample.flags & B4_IMU_SAMPLE_FLAG_ACCEL_VALID) &&
+						b4_forward_tracking();
 
 			if (tk_loc_mtx(b4_snapshot_mtx, TMO_FEVR) < E_OK)
 				goto wait_for_next_tick;
 			(void)b4_processor_update(&b4_processor, &sample,
-						  speed_valid, speed_mm_s,
-						  &processed);
+						  forward_tracking, &processed);
 			b4_latest_output = processed;
 			b4_snapshot_valid = 1U;
 			b4_terrain_report_observe(&b4_terrain_report, &processed, sample.timestamp_ms);

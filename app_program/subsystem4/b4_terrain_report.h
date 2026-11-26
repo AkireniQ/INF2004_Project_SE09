@@ -6,7 +6,7 @@
 /* A bounded FIFO holds completed valid heights. The maximum is extracted
  * separately from the processor so it survives FIFO overflow. */
 #define B4_TERRAIN_QUEUE_SIZE 8U
-#define B4_TERRAIN_HOLD_MS 1000U
+#define B4_TERRAIN_HOLD_MS 3000U
 #define B4_TERRAIN_SAMPLE_MAX_AGE_MS 1000U
 #define B4_TERRAIN_PHASE_UNAVAILABLE 3U
 #define B4_TERRAIN_HEIGHT_MAX_MM 2000U

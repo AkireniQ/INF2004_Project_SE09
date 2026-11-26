@@ -23,7 +23,7 @@ The Pico must run the MQTT firmware (`make NET=lwip MQTT=1`), not the normal non
 - **Vehicle controller:** mission state and reported subsystem fault flags.
 - **Wheels/motion:** measured left and right RPM, propulsion PWM, motor mode, global speed level, recent RPM trend and motor fault labels.
 - **Line sensors and barcode:** left and right black-detection flags, the decoded letter and the barcode navigation controls.
-- **Hump height:** height of the last completed hump in millimetres.
+- **Hump height:** shows a completed hump estimate for three seconds, then returns to 0 mm while the IMU is reporting.
 - **Obstacle:** detected, not detected or unavailable, with the last estimated width in millimetres.
 - **Connection:** live heartbeat age, Wi-Fi/broker/subscription flags and bridge drop flags.
 - **Commands:** binary START, STOP and RESET, Pico acknowledgment and the reason when the controller blocks START.

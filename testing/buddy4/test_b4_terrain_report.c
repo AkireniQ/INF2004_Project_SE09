@@ -17,7 +17,8 @@ int main(void)
     out.roll_valid = 1; out.terrain_state = B4_TERRAIN_ASCENDING;
     out.hump_detected = 1; out.peak_height_mm = 12; /* invalid */
     b4_terrain_report_observe(&r, &out, 100);
-    assert(r.count == 0 && !b4_terrain_report_next(&r, 100, 1, &height, &maximum, &phase));
+    assert(r.count == 0 && b4_terrain_report_next(&r, 100, 1, &height, &maximum, &phase));
+    assert(height == 0 && maximum == B4_TERRAIN_HEIGHT_UNAVAILABLE);
     out.height_valid = 1;
     out.max_height_valid = 1;
     out.max_height_mm = 37;
@@ -32,11 +33,13 @@ int main(void)
     assert(r.count == 1);
     assert(b4_terrain_report_next(&r, 330, 1, &height, &maximum, &phase) && height == 12);
     out.hump_detected = 0; out.terrain_state = B4_TERRAIN_FLAT;
-    b4_terrain_report_observe(&r, &out, 1100);
-    assert(b4_terrain_report_next(&r, 1130, 1, &height, &maximum, &phase));
+    uint32_t second_at = 130 + B4_TERRAIN_HOLD_MS;
+    b4_terrain_report_observe(&r, &out, second_at);
+    assert(b4_terrain_report_next(&r, second_at, 1, &height, &maximum, &phase));
     assert(height == 22 && maximum == 37 && phase == B4_TERRAIN_FLAT);
-    b4_terrain_report_commit(&r, 1130);
-    assert(!r.count && b4_terrain_report_next(&r, 2201, 1, &height, &maximum, &phase));
+    b4_terrain_report_commit(&r, second_at);
+    assert(!r.count && b4_terrain_report_next(&r, second_at + B4_TERRAIN_HOLD_MS - 1u,
+                                               1, &height, &maximum, &phase));
     assert(height == 22 && maximum == 37 && phase == B4_TERRAIN_PHASE_UNAVAILABLE);
 
     unsigned char packet[S1_TERRAIN_BYTES];
@@ -44,12 +47,19 @@ int main(void)
     assert(packet[0] == 0x16 && packet[1] == 0x18);
     assert(!s1_wire_terrain(packet, B4_TERRAIN_HEIGHT_MAX_MM + 1u));
 
+    uint32_t expired_at = second_at + B4_TERRAIN_HOLD_MS;
+    assert(!b4_terrain_report_next(&r, expired_at, 1, &height, &maximum, &phase));
+    b4_terrain_report_observe(&r, &out, expired_at);
+    assert(b4_terrain_report_next(&r, expired_at, 1, &height, &maximum, &phase));
+    assert(height == 0 && maximum == 37 && phase == B4_TERRAIN_FLAT);
+    assert(s1_wire_terrain(packet, height) && packet[0] == 0 && packet[1] == 0x18);
+
     out.hump_detected = 1;
-    for (unsigned i = 0; i < B4_TERRAIN_QUEUE_SIZE; i++) b4_terrain_report_observe(&r, &out, 2300);
+    for (unsigned i = 0; i < B4_TERRAIN_QUEUE_SIZE; i++) b4_terrain_report_observe(&r, &out, expired_at + 1u);
     out.peak_height_mm = out.max_height_mm = 51;
-    b4_terrain_report_observe(&r, &out, 2301);
+    b4_terrain_report_observe(&r, &out, expired_at + 2u);
     assert(r.count == B4_TERRAIN_QUEUE_SIZE && r.dropped == 1);
-    assert(b4_terrain_report_next(&r, 2301, 1, &height, &maximum, &phase));
+    assert(b4_terrain_report_next(&r, expired_at + 2u, 1, &height, &maximum, &phase));
     assert(height == 22 && maximum == 51);
     puts("Buddy 4 terrain report tests passed");
     return 0;

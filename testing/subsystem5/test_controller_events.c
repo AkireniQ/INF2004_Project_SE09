@@ -181,7 +181,7 @@ static void imu_samples(int16_t z, unsigned count)
         B4_IMU_SAMPLE sample = {.timestamp_ms = clock_ms,
             .accel_mg = {0, 0, z}, .flags = B4_IMU_SAMPLE_FLAG_ACCEL_VALID};
         B4_PROCESSOR_OUTPUT output;
-        (void)b4_processor_update(&imu, &sample, 0U, 0, &output);
+        (void)b4_processor_update(&imu, &sample, false, &output);
         (void)b4_safety_dispatch_stop(output.safety_flags, motion_stop, vehicle_request_stop);
     }
 }

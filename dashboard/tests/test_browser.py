@@ -178,6 +178,8 @@ def main():
             fixture.publish(root + "/obstacle", bytes.fromhex("50 10")).wait_for_publish(timeout=5)
             expect(page.locator("#obstacle-width")).to_have_text("80 mm")
             assert page.locator("#left-rpm-path").get_attribute("d")
+            fixture.publish(root + "/terrain", bytes.fromhex("00 18")).wait_for_publish(timeout=5)
+            expect(page.locator("#terrain-height")).to_have_text("0")
             print("PASS end-to-end telemetry: all five binary topics decoded over real broker, HTTP and browser")
             # Specific START rejection is surfaced without bypassing Pico guards.
             diag = bytearray(25);diag[0]=1;diag[3]=7;diag[4]=1|2|4|64;diag[24]=7
@@ -248,6 +250,7 @@ def main():
             clock_offset[0] = 3.0
             expect(page.locator("#motion-freshness")).to_contain_text("Stale")
             expect(page.locator("#terrain-freshness")).to_contain_text("Stale")
+            expect(page.locator("#terrain-height")).to_have_text("—")
             expect(page.locator("#obstacle-status")).to_have_text("Unavailable")
             expect(page.locator("#mission-description")).to_contain_text("Last report only")
             assert page.locator("#start").is_enabled()  # Heartbeat does not refresh measurements.

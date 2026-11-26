@@ -231,7 +231,7 @@ function drawTelemetry(data) {
   const vehicle = topics.vehicle?.data;
   const motion = topics.motion?.data;
   const line = topics.line?.fresh ? topics.line.data : null;
-  const terrain = topics.terrain?.data;
+  const terrain = topics.terrain?.fresh ? topics.terrain.data : null;
   text("mission-state", vehicle?.state.replaceAll("_", " "));
   const descriptions = {
     IDLE: "Controller is stopped or waiting for START.",

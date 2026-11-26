@@ -17,6 +17,7 @@
 #define B4_DEFAULT_ROLL_ENTER_CDEG    UINT16_C(300)
 #define B4_DEFAULT_ROLL_EXIT_CDEG     UINT16_C(150)
 #define B4_HUMP_MAX_GAP_MS            UINT32_C(100)
+#define B4_HUMP_MIN_RISE_MS           UINT32_C(100)
 #define B4_HUMP_MAX_ROLL_CDEG         INT32_C(4500)
 #define B4_DEFAULT_SLOPE_ENTER_CDEG   UINT16_C(300)
 #define B4_DEFAULT_SLOPE_EXIT_CDEG    UINT16_C(200)
@@ -347,6 +348,7 @@ void b4_processor_invalidate_hump(B4_PROCESSOR *processor)
 		processor->hump_state = B4_HUMP_RIGHT_RISE;
 	processor->hump_entry_count = 0U;
 	processor->hump_armed = 0U;
+	processor->hump_flat_count = 0U;
 }
 
 static void b4_processor_update_hump(B4_PROCESSOR *p, const B4_IMU_SAMPLE *sample,
@@ -355,7 +357,6 @@ static void b4_processor_update_hump(B4_PROCESSOR *p, const B4_IMU_SAMPLE *sampl
 	uint8_t debounce = p->config.terrain_transition_samples;
 	if (!valid) {
 		b4_processor_invalidate_hump(p);
-		p->hump_flat_count = 0U;
 		return;
 	}
 	if (p->hump_state == B4_HUMP_LEVEL) {
@@ -371,12 +372,13 @@ static void b4_processor_update_hump(B4_PROCESSOR *p, const B4_IMU_SAMPLE *sampl
 		if (roll >= p->config.roll_enter_cdeg) {
 			if (p->hump_entry_count == 0U) {
 				p->hump_candidate_valid = 1U;
+				p->hump_entry_since_ms = sample->timestamp_ms;
 				p->peak_roll_cdeg = roll;
-				p->peak_height_um = 0;
-				p->height_valid = 0U;
 			}
 			if (roll > p->peak_roll_cdeg) p->peak_roll_cdeg = roll;
-			if (++p->hump_entry_count >= debounce) {
+			if (p->hump_entry_count < debounce) ++p->hump_entry_count;
+			if (p->hump_entry_count >= debounce &&
+			    sample->timestamp_ms - p->hump_entry_since_ms >= B4_HUMP_MIN_RISE_MS) {
 				p->hump_state = B4_HUMP_RIGHT_RISE;
 				if (p->peak_roll_cdeg > B4_HUMP_MAX_ROLL_CDEG)
 					p->hump_candidate_valid = 0U;
@@ -400,6 +402,7 @@ static void b4_processor_update_hump(B4_PROCESSOR *p, const B4_IMU_SAMPLE *sampl
 				B4_EVENT_HUMP_DETECTED, 1U, p->peak_roll_cdeg);
 			p->height_valid = p->hump_candidate_valid &&
 				p->config.effective_lateral_distance_mm != 0U;
+			p->peak_height_um = 0;
 			if (p->height_valid) {
 				p->peak_height_um = (int64_t)p->config.effective_lateral_distance_mm *
 					b4_processor_sin_q1000(p->peak_roll_cdeg);
@@ -430,12 +433,8 @@ static void b4_processor_update_terrain(B4_PROCESSOR *processor,
 					const B4_IMU_SAMPLE *sample,
 					int32_t slope_cdeg,
 					uint8_t gravity_valid,
-					uint8_t speed_valid,
-					int32_t speed_mm_s,
 					B4_PROCESSOR_OUTPUT *output)
 {
-	(void)speed_valid;
-	(void)speed_mm_s;
 	int32_t abs_slope = b4_processor_abs_i32(slope_cdeg);
 	uint8_t debounce = processor->config.terrain_transition_samples;
 
@@ -680,8 +679,7 @@ static void b4_processor_update_turn(B4_PROCESSOR *processor,
 B4_CALIBRATION_STATUS b4_processor_update(
 	B4_PROCESSOR *processor,
 	const B4_IMU_SAMPLE *sample,
-	uint8_t speed_valid,
-	int32_t speed_mm_s,
+	bool forward_tracking,
 	B4_PROCESSOR_OUTPUT *output)
 {
 	B4_CALIBRATION_STATUS calibration_status =
@@ -701,13 +699,11 @@ B4_CALIBRATION_STATUS b4_processor_update(
 
 	if ((processor == NULL) || (sample == NULL) || (output == NULL) ||
 	    (processor->initialized == 0U) ||
-	    (b4_imu_sample_is_valid(sample) == 0U) ||
-	    (speed_valid > 1U)) {
+	    (b4_imu_sample_is_valid(sample) == 0U)) {
 		if (processor != NULL && processor->initialized)
 			b4_processor_invalidate_hump(processor);
 		return B4_CALIBRATION_INVALID_ARGUMENT;
 	}
-	(void)speed_mm_s;
 	(void)memset(output, 0, sizeof(*output));
 	accel_valid =
 		((sample->flags & B4_IMU_SAMPLE_FLAG_ACCEL_VALID) != 0U)
@@ -828,12 +824,12 @@ B4_CALIBRATION_STATUS b4_processor_update(
                 elapsed > 0U && elapsed <= B4_HUMP_MAX_GAP_MS &&
                 !(sample->flags & B4_IMU_SAMPLE_FLAG_ACCEL_OVERRUN);
             output->roll_valid = roll_valid;
-            b4_processor_update_hump(processor, sample, roll_cdeg, roll_valid, output);
+            b4_processor_update_hump(processor, sample, roll_cdeg,
+                roll_valid && forward_tracking && !processor->stop_latched, output);
         }
 		if (safety_candidate == 0U) {
 			b4_processor_update_terrain(processor, sample, slope_cdeg,
-						    gravity_valid, speed_valid,
-						    speed_mm_s, output);
+						    gravity_valid, output);
 		} else {
 			processor->slope_count = 0U;
 			processor->flat_count = 0U;

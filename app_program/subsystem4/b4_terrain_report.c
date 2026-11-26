@@ -35,17 +35,19 @@ uint8_t b4_terrain_report_next(B4_TERRAIN_REPORT *r, uint32_t now,
         return 0U;
     }
     r->offered = 0U;
-    if (r->count && (!r->holding || (uint32_t)(now - r->hold_since) >= B4_TERRAIN_HOLD_MS)) {
+    if (r->holding && (uint32_t)(now - r->hold_since) >= B4_TERRAIN_HOLD_MS)
+        r->holding = 0U;
+    bool live = r->sample_valid && (uint32_t)(now - r->sample_at) <= B4_TERRAIN_SAMPLE_MAX_AGE_MS;
+    if (r->count && !r->holding) {
         *height = r->heights[r->head];
         r->offered = 1U;
-    } else if (r->have_height) {
+    } else if (r->holding) {
         *height = r->displayed_height;
+    } else if (live) {
+        *height = 0U;
     } else return 0U;
-    /* Completed heights remain valid even if the IMU currently cannot
-       determine the terrain phase, such as after the car is picked up. */
-    *max_height = r->max_height_mm;
-    *phase = r->sample_valid && (uint32_t)(now - r->sample_at) <= B4_TERRAIN_SAMPLE_MAX_AGE_MS
-             ? r->phase : B4_TERRAIN_PHASE_UNAVAILABLE;
+    *max_height = r->have_height || r->count ? r->max_height_mm : B4_TERRAIN_HEIGHT_UNAVAILABLE;
+    *phase = live ? r->phase : B4_TERRAIN_PHASE_UNAVAILABLE;
     return 1U;
 }
 
