@@ -13,7 +13,7 @@
 #define S5_CENTRE_INDEX ((S5_SCAN_MAX_ANGLE - S5_CENTRE_ANGLE) / S5_FINE_STEP)
 #define S5_NO_TARGET S5_SCAN_POINTS
 #define S5_UNKNOWN_WIDTH 2047u
-#define S5_MAX_PROJECTED_FRONT_MM 511u
+#define S5_MAX_FRONT_MM 511u
 #define S5_PROFILE_TOLERANCE_MM 100u
 #define S5_TURN_CLEARANCE_MM 100u
 
@@ -35,7 +35,7 @@ typedef enum {
 typedef struct {
     unsigned nearest_mm : 12;
     unsigned width_mm : 11; /* Half the edge-to-edge estimate or observed span. */
-    unsigned front_mm : 9; /* Nearest longitudinal projection, capped at 511 mm. */
+    unsigned front_mm : 9; /* Nearest measured range in the forward corridor, capped at 511 mm. */
     unsigned left_mm : 12;
     unsigned right_mm : 12;
     unsigned angle_offset_deg : 7;

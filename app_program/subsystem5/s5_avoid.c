@@ -5,6 +5,7 @@
 #define FRONT_MARGIN_MM 15u
 #define MAX_LATERAL_OFFSET_MM 400u
 #define MOTION_SETTLE_MS 260u
+#define LEFT_CHECK_TIMEOUT_MS 1500u
 #define SCAN_TIMEOUT_MS 15000u
 #define RESCAN_INTERVAL_MS 1000u
 #define RESCAN_RANGE_CHANGE_MM 30u
@@ -23,8 +24,8 @@ _Static_assert(S5_PASS_DEPTH_PERCENT > 0u && S5_PASS_DEPTH_PERCENT <= 100u,
                "Estimated depth must be a percentage of the measured width");
 _Static_assert(S5_FOLLOW_CLEAR_MM + S5_PASS_UNCERTAIN_DEPTH_MM + S5_PASS_BODY_ALLOWANCE_MM <= S5_MAX_PASS_MM,
                "The conservative default depth must fit the bypass budget");
-_Static_assert(S5_FOLLOW_CLEAR_MM + S5_LONG_REVERSE_MM <= S5_MAX_PROJECTED_FRONT_MM,
-               "The retry window must fit the sonar projection");
+_Static_assert(S5_FOLLOW_CLEAR_MM + S5_LONG_REVERSE_MM <= S5_MAX_FRONT_MM,
+               "The retry window must fit the front range field");
 _Static_assert(S5_MAX_PASS_MM < 1024u, "Total pass distance must fit the 10-bit fields");
 _Static_assert(S5_CHASSIS_WIDTH_MM >= EFFECTIVE_TRACK_MM, "Include the outer wheel edges in chassis width");
 _Static_assert(MAX_LATERAL_OFFSET_MM <= 511u, "Lateral offset must fit in 9 bits");
@@ -92,6 +93,11 @@ bool s5_avoid_executing(S5_PHASE phase)
     return (phase >= S5_TURN_OUT && phase <= S5_ALIGN_LINE) || phase == S5_CHECK_LINE;
 }
 
+bool s5_avoid_ranging_paused(const S5_AVOID *state)
+{
+    return s5_avoid_executing(state->phase) && !(state->phase == S5_SHIFT_OUT && state->check_left);
+}
+
 unsigned s5_planned_pass_mm(const S5_PROFILE *profile, unsigned forward_mm)
 {
     /* Estimate the shallow box depth separately from the chassis allowance. */
@@ -146,10 +152,15 @@ static bool outward_observed(unsigned range)
     return range != 0 && s5_range_available(range);
 }
 
+static unsigned required_lateral_room(unsigned offset)
+{
+    return offset + (S5_CHASSIS_WIDTH_MM + 1u) / 2u + FRONT_MARGIN_MM;
+}
+
 static bool outward_route_fits(unsigned heading, unsigned outward, unsigned offset)
 {
     /* The 60-degree reading must project beyond the chassis and side margin. */
-    unsigned lateral_room = offset + (S5_CHASSIS_WIDTH_MM + 1u) / 2u + FRONT_MARGIN_MM;
+    unsigned lateral_room = required_lateral_room(offset);
     return outward_probe_allowed(heading, offset) && outward_observed(outward) &&
            outward >= (lateral_room * 1000u + 865u) / 866u;
 }
@@ -301,7 +312,7 @@ static S5_AVOID_OUTPUT center_for_turn(S5_AVOID *state, const S5_AVOID_INPUT *in
                              .distance_mm = distance};
 }
 
-static S5_AVOID_OUTPUT execute_route(S5_AVOID *state, const S5_AVOID_INPUT *in)
+static S5_AVOID_OUTPUT execute_route(S5_AVOID *state, const S5_AVOID_INPUT *in, bool range_fresh)
 {
     S5_PHASE phase = state->phase;
     uint32_t elapsed = in->now - state->phase_at;
@@ -330,6 +341,17 @@ static S5_AVOID_OUTPUT execute_route(S5_AVOID *state, const S5_AVOID_INPUT *in)
 
     if (phase == S5_FIND_LINE) return find_tape(state, in, settled);
     if (phase == S5_CENTER_LINE) return center_for_turn(state, in, settled);
+
+    if (phase == S5_SHIFT_OUT && state->check_left) {
+        /* The centred sonar now points along the planned sideways leg. */
+        if (elapsed >= LEFT_CHECK_TIMEOUT_MS) return fail(state, S5_FAIL_ECHO, in->now);
+        if (!settled || in->motion != S5_MOTION_NONE || !range_fresh ||
+            !s5_range_available(in->range_mm) ||
+            !at_or_after(in->range_at, state->phase_at + MOTION_SETTLE_MS)) return wait;
+        if (in->range_mm < required_lateral_room(state->offset_mm))
+            return fail(state, S5_FAIL_CLOSE, in->now);
+        state->check_left = false;
+    }
 
     if (in->motion == S5_MOTION_DONE) {
         switch (phase) {
@@ -379,11 +401,11 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
     S5_AVOID_OUTPUT wait = {.action = S5_WAIT};
     if (phase == S5_OFF || phase == S5_COMPLETE || phase == S5_FAILED) return wait;
     if (in->motion == S5_MOTION_FAILED) return fail(state, S5_FAIL_MOTION, in->now);
-    if (s5_avoid_executing(phase)) return execute_route(state, in);
+    bool range_fresh = in->range_valid && in->now - in->range_at <= S5_RANGE_MAX_AGE_MS;
+    if (s5_avoid_executing(phase)) return execute_route(state, in, range_fresh);
 
     uint32_t elapsed = in->now - state->phase_at;
     unsigned clear_mm = s5_scan_range_limit(state);
-    bool range_fresh = in->range_valid && in->now - in->range_at <= S5_RANGE_MAX_AGE_MS;
     if (phase == S5_WAIT_PATH) {
         /* The scan task keeps ranging at 90 degrees while stopped. A new
            sweep can begin once a current forward range justifies it. */
@@ -436,12 +458,20 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
         S5_PROFILE profile = in->profile;
         if (range_fresh && in->range_mm < profile.front_mm) profile.front_mm = in->range_mm;
         S5_BYPASS plan = s5_plan_bypass_at_range(&profile, clear_mm);
+        /* An unresolved left corridor may be checked head-on after the pivot.
+           The probe eligibility rules reject a close return or a clipped left edge. */
+        bool check_left = plan.side == S5_NO_SIDE && plan.probe_left && range_fresh;
+        if (check_left) {
+            plan.side = S5_LEFT;
+            plan.offset_mm = bypass_offset(-profile.left_edge_mm, profile.left_edge_valid);
+        }
         if (plan.side != S5_NO_SIDE) {
             unsigned pass = s5_planned_pass_mm(&profile, range_fresh ? in->range_mm : S5_UNKNOWN_RANGE);
             if (pass > S5_MAX_PASS_MM) return wait_for_path(state, S5_FAIL_ROOM, in);
             unsigned offset = plan.offset_mm;
             clear_path_failure(state);
             state->side = plan.side;
+            state->check_left = check_left;
             state->offset_mm = offset;
             /* The sideways leg and pivots make no forward progress along the tape. */
             state->pass_mm = pass;

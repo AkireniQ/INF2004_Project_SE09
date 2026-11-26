@@ -232,9 +232,10 @@ static BOOL scan_obstacle(S5_PROFILE *profile, BOOL verbose, const uint32_t *req
         tm_printf((UB*)"%s outward clearance T(left %u deg)=%u mm R(right %u deg)=%u mm\n",
                   tag, S5_CENTRE_ANGLE + S5_OUTWARD_CLEARANCE_BEARING_DEG, (unsigned)profile->left_outward_mm,
                   S5_CENTRE_ANGLE - S5_OUTWARD_CLEARANCE_BEARING_DEG, (unsigned)profile->right_outward_mm);
-    tm_printf((UB*)"%s edge offsets left=%d mm (%s), right=%d mm (%s)\n", tag,
+    tm_printf((UB*)"%s edge offsets left=%d mm (%s), right=%d mm (%s), front clearance=%u mm\n", tag,
               (int)profile->left_edge_mm, profile->left_edge_valid ? "estimated" : "unconfirmed",
-              (int)profile->right_edge_mm, profile->right_edge_valid ? "estimated" : "unconfirmed");
+              (int)profile->right_edge_mm, profile->right_edge_valid ? "estimated" : "unconfirmed",
+              (unsigned)profile->front_mm);
     if (profile->width_status != S5_WIDTH_OK) {
         if (profile->width_mm == S5_UNKNOWN_WIDTH)
             tm_printf((UB*)"%s width=unavailable (%s) nearest_distance=%u mm\n",

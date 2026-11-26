@@ -345,6 +345,34 @@ static void test_track_replay_sees_no_edge_on_either_side(void)
            !profile.left_edge_valid && !profile.right_edge_valid);
 }
 
+static void test_pivot_clearance_from_track_sweeps(void)
+{
+    /* Two sweeps from 135 to 30 degrees, with and without nearby background. */
+    const unsigned sweeps[][22] = {
+        {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE,
+         148, 138, 136, 135, 131, 128, 130,
+         129, 129, 131, 129, 130, 128, 132, 133, 132, 134, 142},
+        {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE,
+         168, 157, 146, 152, 144, 144, 144,
+         141, 143, 141, 143, 143, 136, 143, 143, 146, 148, 150},
+    };
+    const unsigned first = S5_CENTRE_INDEX - 9u;
+    const unsigned last = S5_CENTRE_INDEX + 12u;
+    const unsigned expected_front[] = {128, 136};
+    for (unsigned run = 0; run < sizeof(sweeps) / sizeof(*sweeps); ++run) {
+        S5_SCAN scan = {0};
+        for (unsigned i = first; i <= last; ++i)
+            s5_scan_set(&scan, i, sweeps[run][i - first]);
+        S5_PROFILE profile = s5_profile(&scan, first, last, S5_CENTRE_INDEX, NULL);
+        assert(profile.front_mm == expected_front[run]);
+
+        /* An echo actually within the turn margin still rejects the pivot. */
+        s5_scan_set(&scan, S5_CENTRE_INDEX + 9u, S5_TURN_CLEARANCE_MM - 5u);
+        profile = s5_profile(&scan, first, last, S5_CENTRE_INDEX, NULL);
+        assert(profile.front_mm == S5_TURN_CLEARANCE_MM - 5u);
+    }
+}
+
 static void test_clearance_with_unsteady_background(void)
 {
     const unsigned varied[] = {910, S5_UNKNOWN_RANGE, 705, 1160, 835};
@@ -379,6 +407,7 @@ int main(void)
     test_track_left_limit();
     test_bench_background_returns();
     test_clearance_with_unsteady_background();
+    test_pivot_clearance_from_track_sweeps();
     test_80_mm_bench_target_with_unstable_corner_ranges();
     puts("PASS echo capture, scan packing, partial width estimates, sweep limits and bench background replay");
 }

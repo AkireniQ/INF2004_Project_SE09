@@ -82,7 +82,7 @@ typedef struct {
     unsigned reverse_long:1, scan_retried:1, scan_after_retrace:1, failure:4, failed_phase:5;
     unsigned offset_mm:10, pass_mm:10, search_mm:10, search_after_mm:10;
     unsigned align_at_mm:10, search_progress_mm:10;
-    unsigned blocked_range_mm:12, range_seen:1, search_exhausted:1;
+    unsigned blocked_range_mm:12, range_seen:1, search_exhausted:1, check_left:1;
     S5_TAPE_EDGE left_edge, right_edge;
 } S5_AVOID;
 typedef struct {
@@ -101,6 +101,7 @@ S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm);
 unsigned s5_scan_range_limit(const S5_AVOID *state);
 unsigned s5_planned_pass_mm(const S5_PROFILE *profile, unsigned forward_mm);
 bool s5_avoid_executing(S5_PHASE phase);
+bool s5_avoid_ranging_paused(const S5_AVOID *state);
 void s5_avoid_begin(S5_AVOID *state, uint32_t now);
 void s5_avoid_abort(S5_AVOID *state, S5_FAILURE reason, uint32_t now);
 S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in);
