@@ -356,7 +356,7 @@ static void submit_obstacle_reading(unsigned range, S5_ECHO_STATE echo)
 {
     if (!lock()) return;
     uint32_t now = now_ms();
-    if (s5_avoid_executing(model.avoidance.phase)) {
+    if (s5_avoid_ranging_paused(&model.avoidance)) {
         unlock();
         return;
     }
@@ -408,7 +408,7 @@ void vehicle_submit_obstacle_ping(S5_PING ping)
 BOOL vehicle_obstacle_ranging_paused(void)
 {
     if (!lock()) return FALSE;
-    BOOL paused = s5_avoid_executing(model.avoidance.phase);
+    BOOL paused = s5_avoid_ranging_paused(&model.avoidance);
     unlock();
     return paused;
 }
@@ -656,7 +656,7 @@ static TMO vehicle_service_once(void)
     unsigned previous_state = model.state;
     unsigned previous_junction = model.junction.phase;
     S5_PHASE previous = model.avoidance.phase;
-    bool was_executing = s5_avoid_executing(previous);
+    bool was_ranging_paused = s5_avoid_ranging_paused(&model.avoidance);
     vc_core_step(&model, &in, &out);
     pending.barcode_retry_mm = 0;
     if (previous_state == VC_RETRY_BARCODE && model.state == VC_FOLLOW_LINE) {
@@ -691,6 +691,7 @@ static TMO vehicle_service_once(void)
         if (reset_done) pending.reset = false;
     }
     S5_PHASE phase = model.avoidance.phase;
+    bool check_left = model.avoidance.check_left;
     unsigned side = model.avoidance.side;
     unsigned offset = model.avoidance.offset_mm;
     unsigned pass = model.avoidance.pass_mm;
@@ -703,10 +704,9 @@ static TMO vehicle_service_once(void)
     unsigned right_samples = model.avoidance.right_edge.samples;
     if (phase == S5_FIND_LINE && phase != previous)
         tape_search_peak = (__typeof__(tape_search_peak)){0};
-    bool executing = s5_avoid_executing(phase);
-    if (executing && !was_executing) {
-        /* The obstacle behind the new heading must not block line following
-           when forward ranging resumes after the bypass. */
+    bool ranging_paused = s5_avoid_ranging_paused(&model.avoidance);
+    if (ranging_paused && !was_ranging_paused) {
+        /* Discard readings from a heading the car is leaving. */
         obstacle_range = (S5_RANGE_GATE){.range_mm = S5_UNKNOWN_RANGE, .blocked = true};
         pending.follow_blocked = pending.echo_grace_used = false;
     }
@@ -750,7 +750,7 @@ static TMO vehicle_service_once(void)
     bool dispatch_failed = drive.failed;
     unlock();
 
-    if (scan || (was_executing && !executing)) subsystem5_wake();
+    if (scan || (was_ranging_paused && !ranging_paused)) subsystem5_wake();
     if (dispatch_failed) vehicle_notify_feedback();
     if (out.maneuver.action == S5_REVERSE && state == VC_RETRY_BARCODE && !dispatch_failed)
         tm_printf((UB*)"[S3] barcode missed, backing up %u mm for one more read\n",
@@ -782,6 +782,8 @@ static TMO vehicle_service_once(void)
         if (phase == S5_TURN_OUT)
             tm_printf((UB*)"[S5] planned bypass %s, sideways target=%u mm, straight pass=%u mm\n",
                       side == S5_LEFT ? "T (left)" : "R (right)", offset, pass);
+        if (phase == S5_SHIFT_OUT && check_left)
+            tm_printf((UB*)"[S5] left fallback, checking clearance with the servo centred\n");
         if (phase == S5_CENTER_LINE)
             tm_printf((UB*)"[S5] tape crossings left=%u mm right=%u mm, final pivot starts at %u mm\n",
                       left_entry, right_entry, align_at);

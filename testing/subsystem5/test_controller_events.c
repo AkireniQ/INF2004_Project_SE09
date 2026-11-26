@@ -758,6 +758,32 @@ int main(void)
     assert(model.avoidance.phase == S5_PROFILE_PATH && scan_count == scans_before + 1 &&
            !queued_command);
 
+    /* A fallback pivot wakes centred ranging only after the turn completes. */
+    assert(vehicle_obstacle_scan_request(&request, NULL));
+    S5_PROFILE fallback = saved;
+    fallback.left_edge_mm = -50;
+    fallback.left_mm = fallback.left_path_mm = S5_UNKNOWN_RANGE;
+    fallback.right_path_mm = 100;
+    clock_ms += 20;
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
+    vehicle_finish_obstacle_scan(&fallback, request);
+    work();
+    assert(model.avoidance.phase == S5_TURN_OUT && vehicle_obstacle_ranging_paused());
+    settle_step();
+    assert(queued_command == pivot_left);
+    wakes_before = ranging_wakes;
+    complete_move();
+    assert(model.avoidance.phase == S5_SHIFT_OUT && !vehicle_obstacle_ranging_paused() &&
+           ranging_wakes == wakes_before + 1);
+    vehicle_submit_obstacle_range(600);
+    work();
+    settle_step();
+    assert(!queued_command);
+    vehicle_submit_obstacle_range(600);
+    work();
+    assert((queued_command >> 4) == 185 && vehicle_obstacle_ranging_paused());
+    assert(!range_valid(clock_ms)); /* The left-facing reading cannot leak into the next heading. */
+
     puts("PASS missing echo does not start a scan, close echo stops before scanning, and bypass preserves STOP");
     test_barcode_junction();
     test_imu_restart();
