@@ -7,7 +7,9 @@ ER s1_publish_motion(void)
 #if TM_MQTT
     S2_STATUS s;
     if(!motion_get_status(&s))return E_OBJ;
-    return (ER)mqtt_bridge_send(MQTT_ROUTE_MOTION,s.bytes,sizeof(s.bytes));
+    /* The first 41 bits contain mode, faults, RPM and PWM. Progress is local. */
+    s.bytes[5] &= 1u;
+    return (ER)mqtt_bridge_send(MQTT_ROUTE_MOTION, s.bytes, 6u);
 #else
     return E_NOSPT;
 #endif
@@ -19,39 +21,37 @@ static void account(ER result)
 #if TM_MQTT
 static void publish_controller(const VEHICLE_SNAPSHOT *s)
 {
-    unsigned char bytes[31]={0};
-    uint32_t age=s->timestamp_ms-s->line_timestamp_ms;
-    if(!s->line_valid || age>65535u)age=65535u;
-    bytes[0]=2;bytes[1]=s->state;bytes[2]=s->reason;bytes[3]=s->start_block;
-    bytes[4]=(s->motor_ready?1u:0u)|(s->line_valid?2u:0u)|(s->line_stop?4u:0u)|
-             (s->obstacle_blocked?8u:0u)|(s->start_pending?16u:0u)|
-             (s->stop_pending?32u:0u)|(s->link_ready?64u:0u)|(s->reset_pending?128u:0u);
+    unsigned char bytes[13];
+    bytes[0]=3;bytes[1]=s->state;bytes[2]=s->reason;bytes[3]=s->start_block;
+    bytes[4]=(s->motor_ready?1u:0u)|(s->start_pending?16u:0u)|
+             (s->stop_pending?32u:0u)|(s->reset_pending?128u:0u);
     bytes[5]=s->motor_faults;
-    unsigned values[3]={(unsigned)s->l,(unsigned)s->c,(unsigned)s->r};
-    for(unsigned i=0;i<3;i++){bytes[6+2*i]=values[i]&255;bytes[7+2*i]=values[i]>>8;}
-    bytes[12]=s->left_rpm;bytes[13]=s->right_rpm;
-    bytes[14]=age&255;bytes[15]=age>>8;
-    for(unsigned i=0;i<4;i++){
-        bytes[16+i]=(s->timestamp_ms>>(8*i))&255;
-        bytes[20+i]=(s->telemetry_drops>>(8*i))&255;
-    }
-    bytes[24]=s->last_start_reject;
-    for(unsigned i=0;i<4;i++)bytes[25+i]=(s->timing_fault_gap_us>>(8*i))&255;
-    bytes[29]=s->control_gap_limit_us&255;bytes[30]=s->control_gap_limit_us>>8;
+    bytes[6]=s->last_start_reject;
+    for(unsigned i=0;i<4;i++)bytes[7+i]=(s->timing_fault_gap_us>>(8*i))&255;
+    bytes[11]=s->control_gap_limit_us&255;bytes[12]=s->control_gap_limit_us>>8;
     account((ER)mqtt_bridge_send(MQTT_ROUTE_CONTROLLER,bytes,sizeof(bytes)));
 }
 
-static void publish_sonar(const VEHICLE_SNAPSHOT *s)
+static void publish_obstacle(const VEHICLE_SNAPSHOT *s)
 {
     static uint32_t last_at;
-    if (s->timestamp_ms - last_at < 1000u) return;
-    last_at = s->timestamp_ms;
-    unsigned char bytes[4] = {0};
-    s1_wire_put(bytes, 0, 12, s->obstacle_forward_mm);
-    s1_wire_put(bytes, 12, 5, s->avoidance_phase);
-    s1_wire_put(bytes, 17, 5, s->avoidance_failed_phase);
-    s1_wire_put(bytes, 22, 4, s->avoidance_failure);
-    account((ER)mqtt_bridge_send(MQTT_ROUTE_SONAR, bytes, sizeof(bytes)));
+    static S1_OBSTACLE_STATUS last_status;
+    static unsigned last_width;
+    S1_OBSTACLE_STATUS status = S1_OBSTACLE_UNKNOWN;
+    if (s->obstacle_blocked || s->state == VC_AVOIDING || s->state == VC_RECOVER_LINE)
+        status = S1_OBSTACLE_DETECTED;
+    else if (s5_range_available(s->obstacle_forward_mm))
+        status = S1_OBSTACLE_CLEAR;
+    unsigned width = s->obstacle_profile ? s->width_mm : S1_WIDTH_UNAVAILABLE;
+    if (status == last_status && width == last_width && s->timestamp_ms - last_at < 1000u)
+        return;
+    ER result = s1_publish_obstacle(status, width);
+    account(result);
+    if (result == E_OK) {
+        last_at = s->timestamp_ms;
+        last_status = status;
+        last_width = width;
+    }
 }
 #endif
 void s1_publish_telemetry(void)
@@ -68,14 +68,15 @@ void s1_publish_telemetry(void)
     /* No fabricated zero measurements during startup or absent subsystems. */
     if(motion_ready())account(s1_publish_motion());
     if(s.line_valid && (uint32_t)(s.timestamp_ms-s.line_timestamp_ms)<=VC_LINE_MAX_AGE_MS){
-        unsigned ir=(s.l>=600?1u:0u)|(s.c>=600?2u:0u)|(s.r>=600?4u:0u);
+        unsigned ir=(s.l>=600?1u:0u)|(s.r>=600?4u:0u);
         account(s1_publish_line(ir,s.barcode));
     }
+    /* Preserve the completed-height FIFO; publish its separate session maximum.
+       Explicit unavailable clears a previous boot's display before any hump. */
+    unsigned maximum = S1_TERRAIN_UNAVAILABLE;
     if(s.terrain_valid && (uint32_t)(s.timestamp_ms-s.terrain_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS)
-        account(s1_publish_terrain(s.height_mm,s.terrain_phase));
-    if(s.obstacle_profile ||
-       (s.obstacle_valid && (uint32_t)(s.timestamp_ms-s.obstacle_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS))
-        account(s1_publish_obstacle(s.near_mm,s.width_mm,s.clear_left_mm,s.clear_right_mm));
-    publish_sonar(&s);
+        maximum = s.max_height_mm;
+    account(s1_publish_terrain(maximum));
+    publish_obstacle(&s);
 #endif
 }

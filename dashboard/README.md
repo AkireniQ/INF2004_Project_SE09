@@ -21,24 +21,26 @@ The Pico must run the MQTT firmware (`make NET=lwip MQTT=1`), not the normal non
 ## What is displayed
 
 - **Vehicle controller:** mission state and reported subsystem fault flags.
-- **Wheels/motion:** measured left/right RPM; propulsion PWM; actual motor mode; global speed level; recent 120-sample RPM trend; raw motor-fault labels; bounded-move progress counts.
-- **Line/barcode:** left/right black-detection flags, centre flag, reported barcode letter.
-- **Terrain:** reported height in millimetres and terrain phase.
-- **Obstacle:** nearest distance, width, left/right clearance in millimetres.
+- **Wheels/motion:** measured left and right RPM, propulsion PWM, motor mode, global speed level, recent RPM trend and motor fault labels.
+- **Line sensors and barcode:** left and right black-detection flags, the decoded letter and the barcode navigation controls.
+- **Hump height:** height of the last completed hump in millimetres.
+- **Obstacle:** detected, not detected or unavailable, with the last estimated width in millimetres.
 - **Connection:** live heartbeat age, Wi-Fi/broker/subscription flags and bridge drop flags.
-- **Commands/events:** exact binary START/STOP, Pico acknowledgment and a bounded connection/mission/fault event list.
+- **Commands:** binary START, STOP and RESET, Pico acknowledgment and the reason when the controller blocks START.
 
-All values come from received MQTT payloads. In the motion recovery firmware the outer IR channels steer, and the centre ADC channel reads the barcode. The dashboard displays the latest decoded A–D barcode. The terrain and obstacle cards show **No data** until a producer submits a valid measurement.
-
-The matching diagnostics firmware additionally publishes normalized IR darkness, target RPM, controller stop reason and telemetry-drop count on `/controller`. Older firmware does not publish these fields. Raw ADC values, tilt, turn rate and total distance remain unavailable. Wheel progress is counts for bounded moves, not cumulative distance. The global speed level is a legacy selection, not the per-wheel fine-RPM target. A displayed mission state reports controller intent; actual wheel RPM reports measured motion.
+The outer IR channels steer and the dedicated GP27 ADC channel reads barcodes. The dashboard displays the latest decoded A–Z barcode. The obstacle width is unavailable until there is a usable width estimate. A displayed mission state reports controller intent. Wheel RPM reports measured motion.
 
 ## Freshness and commands
 
-Each telemetry channel independently expires after 2 seconds without a valid live sample. Its last received value remains visible but faded and labelled **Stale**. Live heartbeats do not freshen old measurements. A reconnect requires new live samples before telemetry becomes fresh again. Retained telemetry and malformed packets never count as live data. No-data and measured zero remain distinct.
+Each telemetry channel independently expires after 2 seconds without a valid live sample. The wheel, mission and hump panels label old readings **Stale**. The obstacle status changes to **Unavailable** when detection telemetry expires. Live heartbeats do not freshen old measurements. A reconnect requires new live samples before telemetry becomes fresh again. Retained telemetry and malformed packets never count as live data. No-data and measured zero remain distinct.
 
 Heartbeat expires after 15 seconds. START is available only when the broker/subscriptions and a fresh heartbeat confirm all connection flags. The Pico may still reject START due to startup delay, stale line data, a junction stop or fault. STOP stays available while the local server has a broker connection. No command is retained; the server does not replay commands after reconnect.
 
-The Pico ACK confirms acceptance for processing. Inspect mission state, measured wheel RPM and faults to confirm movement. During an obstacle detour the mission state shows Avoiding, then Recover line before returning to Follow line. The obstacle card shows the latest profile. A started mission uses local sensor feedback if MQTT goes offline. Dashboard commands require a live connection.
+The Pico ACK confirms acceptance for processing. Inspect mission state, measured wheel RPM and faults to confirm movement. During an obstacle detour the mission state shows Avoiding, then Recover line before returning to Follow line. A started mission uses local sensor feedback if MQTT goes offline. Dashboard commands require a live connection.
+
+## Assign barcode instructions
+
+With the car stopped, choose four different A–Z letters in **Barcode navigation** and click **Apply mapping**. Wait for the Pico to confirm the active mapping before starting. The controller uses an assigned letter at the next confirmed junction. Straight keeps line tracking active through the crossing. Unassigned letters appear in telemetry without changing navigation. The Pico keeps the mapping in memory until it restarts. The power-up defaults are Left A, Right F, Straight D and U-turn C.
 
 MQTT QoS 0 does not guarantee delivery. The browser reports uncertainty if its HTTP request times out. Faults need investigation before a new START. This is a local dashboard with Host/Origin and command-token checks, bound to loopback; it is not designed for public Internet exposure. Broker TLS/auth configuration is not added by this dashboard or the current Pico MQTT client.
 
@@ -48,17 +50,21 @@ Subscriptions use the configured root and these suffixes:
 
 | Topic | Bytes | Decode |
 |---|---:|---|
-| `controller` |25 (v1) / 31 (v2)| versioned startup guard, readiness, normalized IR, target RPM, line age and drop count; see VEHICLE_CONTROLLER.md |
+| `controller` |13 (v3)| bytes 0–6 carry version, state, stop reason, START blocker, readiness/pending flags, motor fault bits and last START rejection. Bytes 7–10 carry the timing fault gap in µs, and bytes 11–12 carry the timing limit in µs. |
 | `status` |1| Wi-Fi1, broker2, command subscription4, TX drop8, RX drop16 |
 | `ack` |1| START in bit0, RESET in bit2 (neither means STOP); rejected in bit1 |
 | `vehicle` |1| state bits0..2, fault mask bits3..7 |
-| `motion` |9| S2_STATUS packed bits: mode0:2, level2:3, faults5:4, L RPM9:9, R RPM18:9, L PWM27:7, R PWM34:7, L progress41:13, R progress54:13 |
-| `line` |1| L/C/R black bits0/1/2, barcode bits3..5 |
-| `terrain` |2| height0:11, phase11:3 |
-| `obstacle` |6| nearest0:12, width12:11, left23:12, right35:12. Width 2047 and side 4095 mean unavailable. Side 4094 means open. |
-| `sonar` |4| latest forward range0:12, phase12:5, failed phase17:5, detour failure22:4. Range 4094 means open and 4095 means unavailable. Reported once per second. |
+| `motion` |6| mode0:2, level2:3, faults5:4, L RPM9:9, R RPM18:9, L PWM27:7, R PWM34:7 |
+| `line` |1| L/R black bits0/2, barcode bits3..7 (0 none, 1–26 A–Z) |
+| `barcode_map` |3| Active mapping, with left0:5, right5:5, straight10:5, U-turn15:5, and tag `0xA` at 20:4. Letters use 1–26 for A–Z. |
+| `terrain` |2| Session maximum in bits 0–10 (2047 = unavailable); bits 11–13 = 6 identify the maximum format. No measurement is fabricated before the first valid completed hump. |
+| `obstacle` |2| width0:11 (2047 means unavailable), detection11:2 (0 unavailable, 1 not detected, 2 detected). Reported on change and refreshed once per second. |
+
+The dashboard can also decode older controller, motion, terrain and obstacle packets. It reads the old `sonar` topic for detection when using older firmware. The updated Pico does not publish that topic.
 
 Bit numbering starts at the least significant bit of byte0. Fields use the firmware's little-endian packing. `offset:width` notation is used above. `mqtt_protocol.py` validates lengths, ranges and unused bits before displaying telemetry. START publishes `0x01`, STOP `0x00`, and stopped-only RESET `0x02` to `/command`, QoS0, non-retained. Strings such as `START` are not valid Pico commands.
+
+To apply a mapping, the dashboard publishes the three-byte mapping packet to `/command`, QoS0 and non-retained. The Pico reports its active mapping on `/barcode_map` once per second. The dashboard confirms the change when that report matches the submitted mapping.
 
 ## Tests
 
@@ -79,10 +85,17 @@ Set `BUDDY1_MOSQUITTO` or `BUDDY1_BROWSER` if executable paths are not discovera
 
 ## If START is rejected
 
-Replace both the dashboard and Pico firmware with matching current versions. A heartbeat confirms network connectivity, not that the motors and sensors are ready. The Vehicle controller panel reports the actual START blocker. Wait at least five seconds after power-up and start on a straight section, not a crossing. Read the named blocker before resetting faults. If it says diagnostics unavailable, the Pico is running older firmware or the topic root does not match. Send the blocker text and IR/target values for diagnosis; a generic one-byte rejected ACK alone cannot identify the cause.
+Use the current dashboard with the Pico firmware. The Commands panel shows the controller's START blocker when available. Wait at least five seconds after power-up and start on a straight section of tape. Read the blocker before resetting faults and check USB serial for more detail.
 
 ## Reset a stopped fault
 
 With current firmware and a live command connection, a stopped motor or controller fault enables **Reset fault**. Press it once and wait for the ACK and IDLE state. After a failed detour, put the car back on a straight section of tape before pressing START separately. If a timing fault returns, capture the displayed **Gap / limit** numbers before clearing it.
 
 The command is binary02; accepted RESET ACK04, rejected RESET ACK06. Existing START/STOP bytes are unchanged. Controller diagnostics version2 has31 bytes and adds reset-pending, latched timing gap and limit; older version1/25-byte diagnostics still display but cannot enable RESET. Raw ADC values and total distance remain unreported.
+
+The hump card displays the maximum valid completed height for the processor session,
+not the FIFO's latest completed height. Firmware sends unavailable before the first
+measurement (including after reboot); reception freshness is separate from the age
+of the hump that established the maximum. Update firmware and dashboard together.
+Legacy three-byte reports expose their explicit maximum; legacy two-byte completed
+heights are not displayed as a maximum. The completed-event FIFO is unchanged.

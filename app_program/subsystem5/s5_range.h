@@ -7,6 +7,7 @@
 #define S5_MIN_ECHO_US 100u
 #define S5_ECHO_TIMEOUT_US 30000u
 #define S5_ECHO_OBSERVE_US 60000u
+#define S5_ECHO_EXTENDED_US 100000u
 /* RCWL-9610A no-target pulse observed at approximately 47.1 ms on the car. */
 #define S5_NO_TARGET_MIN_US 46900u
 #define S5_NO_TARGET_MAX_US 47300u
@@ -14,7 +15,7 @@
 #define S5_UNKNOWN_RANGE 4095u
 #define S5_SCAN_STOP_MM 240u
 #define S5_CLEAR_MM 270u
-#define S5_FOLLOW_STOP_MM 230u
+#define S5_FOLLOW_STOP_MM 180u
 #define S5_FOLLOW_CLEAR_MM 270u
 
 static inline bool s5_range_measured(unsigned range)
@@ -29,7 +30,7 @@ static inline bool s5_range_available(unsigned range)
 
 static inline unsigned s5_range_from_echo(unsigned pulse_us)
 {
-    if (pulse_us < S5_MIN_ECHO_US || pulse_us >= S5_ECHO_TIMEOUT_US)
+    if (pulse_us < S5_MIN_ECHO_US || pulse_us >= S5_ECHO_EXTENDED_US)
         return S5_UNKNOWN_RANGE;
     unsigned mm = (pulse_us * 343u + 1000u) / 2000u;
     return s5_range_measured(mm) ? mm : S5_OPEN_RANGE;
@@ -41,7 +42,7 @@ typedef enum {
 } S5_ECHO_STATE;
 
 typedef struct {
-    unsigned pulse_us:16;
+    unsigned pulse_us:17;
     unsigned range_mm:12;
     unsigned state:3;
 } S5_PING;
@@ -49,12 +50,11 @@ typedef struct {
 static inline S5_PING s5_classify_echo(S5_ECHO_STATE state, unsigned pulse_us)
 {
     unsigned range = S5_UNKNOWN_RANGE;
-    if (state == S5_ECHO_PULSE)
+    if (state == S5_ECHO_PULSE || state == S5_ECHO_LATE)
         range = s5_range_from_echo(pulse_us);
-    else if (state == S5_ECHO_LATE &&
-             pulse_us >= S5_NO_TARGET_MIN_US && pulse_us <= S5_NO_TARGET_MAX_US) {
+    if (state == S5_ECHO_LATE &&
+        pulse_us >= S5_NO_TARGET_MIN_US && pulse_us <= S5_NO_TARGET_MAX_US) {
         state = S5_ECHO_NO_TARGET;
-        range = S5_OPEN_RANGE;
     }
     return (S5_PING){.state = state, .pulse_us = pulse_us, .range_mm = range};
 }

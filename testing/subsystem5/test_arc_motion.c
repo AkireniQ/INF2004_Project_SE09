@@ -116,12 +116,34 @@ static void run_pivot(bool right)
     assert(s2_get_bits(&status,41,13) >= 255 && s2_get_bits(&status,54,13) >= 255);
 }
 
+static void run_crawl_pivot(unsigned degrees, bool right)
+{
+    s2_core_init();
+    assert(s2_core_crawl_pivot(degrees, right));
+    assert(state.left_rpm == S3_CRUISE_RPM && state.right_rpm == S3_CRUISE_RPM);
+    S2_STATUS status;
+    s2_core_snapshot(&status);
+    assert(!s2_core_pivot_reached(degrees, &status));
+    const unsigned pins[] = {right ? LEFT_IN_A : LEFT_IN_B, right ? RIGHT_IN_B : RIGHT_IN_A};
+    sample(0, 0);
+    assert(duty[pins[0]] && duty[pins[1]]);
+    run_plant(pins, 900);
+    s2_core_snapshot(&status);
+    assert(s2_core_pivot_reached(degrees, &status));
+    assert(!s2_core_pivot_reached(degrees + 3u, &status));
+    assert(duty[pins[0]] == 0 && duty[pins[1]] == 0);
+}
+
 int main(void)
 {
     run_straight_maneuver(false);
     run_straight_maneuver(true);
     run_pivot(false);
     run_pivot(true);
+    run_crawl_pivot(90, false);
+    run_crawl_pivot(90, true);
+    run_crawl_pivot(108, false);
+    run_crawl_pivot(198, true);
     run_arc(false);
     run_arc(true);
     assert(s2_core_arc(true));
@@ -131,5 +153,5 @@ int main(void)
     s2_core_snapshot(&status);
     assert(!s2_core_arc_finished(true, &status));
     assert(duty[LEFT_IN_A] == 0 && duty[RIGHT_IN_A] == 0);
-    puts("PASS crawl-speed straight moves, pivot direction and encoder-controlled arcs");
+    puts("PASS crawl-speed straight moves, encoder-controlled pivots and arcs");
 }

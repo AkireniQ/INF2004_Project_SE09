@@ -23,10 +23,10 @@ static const char * const topics[MQTT_ROUTE_COUNT] = {
     MQTT_TOPIC_ROOT "/line", MQTT_TOPIC_ROOT "/terrain",
     MQTT_TOPIC_ROOT "/obstacle", MQTT_TOPIC_ROOT "/vehicle",
     MQTT_TOPIC_ROOT "/ack", MQTT_TOPIC_ROOT "/command",
-    MQTT_TOPIC_ROOT "/controller", MQTT_TOPIC_ROOT "/sonar"
+    MQTT_TOPIC_ROOT "/controller", MQTT_TOPIC_ROOT "/sonar", MQTT_TOPIC_ROOT "/barcode_map"
 };
 /* Fail compilation rather than silently truncate a configured topic. */
-typedef char topic_must_fit[(sizeof(MQTT_TOPIC_ROOT "/controller") <= TOPIC_MAX) ? 1 : -1];
+typedef char topic_must_fit[(sizeof(MQTT_TOPIC_ROOT "/barcode_map") <= TOPIC_MAX) ? 1 : -1];
 static mqtt_client_t *client;
 static ip_addr_t broker;
 static u8_t connecting;
@@ -93,6 +93,7 @@ static void subscribe_done_cb(void *arg, err_t result)
     subscribing = 0;
     if (result == ERR_OK && (flags & MQTT_LINK_BROKER) != 0u) {
         flags |= MQTT_LINK_SUBSCRIBED;
+        heartbeat_at = sys_now(); /* Report confirmed readiness on the next service poll. */
     } else {
         flags &= ~MQTT_LINK_SUBSCRIBED;
         subscribe_at = sys_now() + RETRY_MS;
@@ -150,8 +151,10 @@ void mqtt_utk_poll(int wifi_up)
 {
     u32_t now = sys_now();
     unsigned budget;
-    if (wifi_up) { flags |= MQTT_LINK_WIFI; }
-    else {
+    if (wifi_up) {
+        if ((flags & MQTT_LINK_WIFI) == 0u) { retry_at = now; }
+        flags |= MQTT_LINK_WIFI;
+    } else {
         if (client != 0 && (connecting || (flags & MQTT_LINK_BROKER) != 0u)) {
             mqtt_disconnect(client);
         }
@@ -159,7 +162,6 @@ void mqtt_utk_poll(int wifi_up)
         subscribing = 0;
         rx_valid = 0;
         flags &= ~(MQTT_LINK_WIFI | MQTT_LINK_BROKER | MQTT_LINK_SUBSCRIBED);
-        retry_at = now + RETRY_MS;
     }
     /* The Wi-Fi task can run before usermain creates both message buffers. */
     if (!mqtt_bridge_ready()) { return; }

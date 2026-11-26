@@ -7,6 +7,10 @@ let commandQueue = Promise.resolve();
 let polling = false;
 let lastAckTime = "";
 let commandPosting = false;
+const barcodeActions = ["left", "right", "straight", "uturn"];
+let barcodeEdited = false;
+let barcodePosting = false;
+let barcodeError = "";
 function setFlag(id, value, fresh) {
   const node = el(id);
   node.className = "flag" + (fresh ? value ? " good" : " bad" : "");
@@ -18,7 +22,7 @@ function draw(data) {
   el("broker-address").textContent = `${data.broker}:${data.broker_port}`;
   el("topic-root").textContent = data.root;
   el("live-monitor").classList.toggle("online", data.broker_connected);
-  el("start").disabled = !data.start_allowed || commandBusy;
+  el("start").disabled = !data.start_allowed || commandBusy || barcodePosting;
   el("stop").disabled = !data.stop_allowed;
   el("reset").disabled = !data.reset_allowed || resetBusy;
   el("ready-dot").classList.toggle("online", data.start_allowed);
@@ -51,6 +55,7 @@ function draw(data) {
   for (const id of ["wifi", "mqtt", "subscribed"]) setFlag(id, data.pico[id], data.pico.fresh && data.broker_connected);
   el("status-hex").textContent = data.pico.hex ?? "—";
   drawTelemetry(data);
+  drawBarcodeMap(data);
   el("drop-status").textContent = data.pico.hex === null ? "Waiting for data" : data.pico.tx_drop || data.pico.rx_drop ? "DROP FLAG SET" : "NO DROP FLAGS";
   if (data.last_ack && data.last_ack.time !== lastAckTime && !commandPosting) {
     const ack = data.last_ack;
@@ -74,6 +79,7 @@ async function refresh() {
   } catch (error) {
     state = null;
     drawTelemetry(null);
+    drawBarcodeMap(null);
     el("start").disabled = el("stop").disabled = el("reset").disabled = true;
     el("live-monitor").classList.remove("online");
     el("ready-dot").classList.remove("online");
@@ -89,7 +95,7 @@ async function refresh() {
   }
 }
 function send(command) {
-  if (!state || (command === "start" && commandBusy) || (command === "reset" && resetBusy)) return;
+  if (!state || (command === "start" && (commandBusy || barcodePosting)) || (command === "reset" && resetBusy)) return;
   if (command === "reset") { resetBusy = true; el("reset").disabled = true; }
   if (command === "start") { commandBusy = true; el("start").disabled = true; }
   // Preserve operator click order, including STOP clicked while START is posting.
@@ -121,6 +127,84 @@ async function performSend(command) {
 el("start").addEventListener("click", () => send("start"));
 el("stop").addEventListener("click", () => send("stop"));
 el("reset").addEventListener("click", () => send("reset"));
+
+function barcodeDraft() {
+  return Object.fromEntries(barcodeActions.map(action => [action, el("barcode-" + action).value]));
+}
+
+function sameMapping(first, second) {
+  return Boolean(first && second && barcodeActions.every(action => first[action] === second[action]));
+}
+
+function drawBarcodeMap(data) {
+  const report = data?.telemetry?.barcode_map;
+  const active = report?.data;
+  const request = data?.barcode_request;
+  const pending = barcodePosting || request?.status === "pending";
+  if (active && (!barcodeEdited || (!pending && sameMapping(barcodeDraft(), active)))) {
+    barcodeEdited = false;
+    for (const action of barcodeActions) el("barcode-" + action).value = active[action];
+  }
+  for (const action of barcodeActions) el("barcode-" + action).disabled = !report?.fresh || pending;
+  const draft = barcodeDraft();
+  const duplicate = new Set(Object.values(draft)).size !== barcodeActions.length;
+  const changed = Boolean(active && !sameMapping(draft, active));
+  el("barcode-apply").disabled = pending || !data?.barcode_map_allowed || duplicate || !changed;
+
+  const activeRow = el("barcode-active");
+  activeRow.hidden = !active || (!changed && report.fresh);
+  if (active) activeRow.textContent = `${report.fresh ? "Active" : "Last reported"} mapping · Left ${active.left} · Right ${active.right} · Straight ${active.straight} · U-turn ${active.uturn}`;
+  const status = el("barcode-map-status");
+  let message = "";
+  if (pending) message = "Waiting for the Pico to confirm the mapping…";
+  else if (barcodeError) message = barcodeError;
+  else if (!report?.fresh) message = "Waiting for a live mapping from the Pico.";
+  else if (duplicate) message = "Use a different letter for each action.";
+  else if (request?.status === "unconfirmed" && changed && sameMapping(request.mapping, draft)) {
+    message = "The Pico did not confirm this mapping. Check the active mapping and try again while stopped.";
+  } else if (!data.barcode_map_allowed) message = "Stop the car to apply a mapping.";
+  else if (changed) message = "Mapping changes are ready to apply.";
+  else if (request?.status === "applied" && sameMapping(request.mapping, active)) message = "Mapping confirmed by the Pico.";
+  else message = "The mapping stays active until the Pico restarts.";
+  if (status.textContent !== message) status.textContent = message;
+  status.classList.toggle("error", Boolean(barcodeError || (report?.fresh && duplicate)));
+}
+
+for (const action of barcodeActions) {
+  const select = el("barcode-" + action);
+  for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") select.add(new Option(letter, letter));
+  select.value = "";
+  select.addEventListener("change", () => {
+    barcodeEdited = true;
+    barcodeError = "";
+    drawBarcodeMap(state);
+  });
+}
+el("barcode-map-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!state || el("barcode-apply").disabled) return;
+  const mapping = barcodeDraft();
+  barcodePosting = true;
+  el("start").disabled = true;
+  barcodeError = "";
+  drawBarcodeMap(state);
+  try {
+    const response = await fetch("/api/barcode-map", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Dashboard-Token": state.csrf },
+      body: JSON.stringify(mapping), signal: AbortSignal.timeout(5000)
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The mapping could not be sent.");
+    if (state) state.barcode_request = result.barcode_request;
+  } catch (error) {
+    barcodeError = error.name === "TimeoutError" ? "Delivery is uncertain. Check the active mapping before retrying." : error.message;
+  } finally {
+    barcodePosting = false;
+    drawBarcodeMap(state);
+    await refresh();
+  }
+});
+
 refresh();
 setInterval(refresh, 1000);
 
@@ -132,7 +216,7 @@ function faultList(id, labels, available) {
 }
 function drawTelemetry(data) {
   const topics = data?.telemetry ?? {};
-  for (const name of ["vehicle", "motion", "line", "terrain", "obstacle"]) {
+  for (const name of ["vehicle", "motion", "line", "terrain"]) {
     const sample = topics[name];
     const card = el(name + "-card");
     const fresh = Boolean(sample?.fresh);
@@ -144,43 +228,24 @@ function drawTelemetry(data) {
   }
   const diagnostic = topics.controller;
   const controller = diagnostic?.data;
-  text("start-blocker", controller ? diagnostic.fresh ? controller.start_block_label : "Controller diagnostics stale" : "Controller diagnostics unavailable");
-  text("start-hint", controller && diagnostic.fresh ? controller.start_hint : "Use the matching Pico diagnostics firmware and dashboard to report the START blocker.");
-  text("ir-age", controller ? controller.line_age_ms === null ? "No valid sample" : controller.line_age_ms + " ms" : null);
-  text("line-stop", controller ? controller.line_stop ? "Latched" : "No" : null);
-  text("controller-detail", controller ? `IR darkness L/C/R: ${controller.left_dark} / ${controller.centre_dark} / ${controller.right_dark}. Target RPM L/R: ${controller.left_target_rpm} / ${controller.right_target_rpm}. Telemetry drops: ${controller.telemetry_drops}.` : "Waiting for live controller diagnostics.");
   const vehicle = topics.vehicle?.data;
   const motion = topics.motion?.data;
   const line = topics.line?.fresh ? topics.line.data : null;
   const terrain = topics.terrain?.data;
-  const obstacle = topics.obstacle?.data;
   text("mission-state", vehicle?.state.replaceAll("_", " "));
   const descriptions = {
     IDLE: "Controller is stopped or waiting for START.",
     FOLLOW_LINE: "Controller is applying line-following recommendations.",
     FAULT: "Controller has stopped on a fault. Inspect the readings before restarting.",
-    TURNING: "A turning mission state was reported.", AVOIDING: "An avoidance mission state was reported.",
-    RECOVER_LINE: "A line-recovery mission state was reported."
+    TURNING: "Navigating a barcode junction and checking the branch tape.", AVOIDING: "An avoidance mission state was reported.",
+    RECOVER_LINE: "A line-recovery mission state was reported.",
+    RETRY_BARCODE: "Backing up in a straight line for one more barcode read."
   };
   const stopped = vehicle?.state === "IDLE" || vehicle?.state === "FAULT";
   const stopReason = stopped && diagnostic?.fresh && controller.state === vehicle.state
     ? controller.stop_reason_label : null;
   text("mission-description", vehicle ? topics.vehicle.fresh ? stopReason ?? descriptions[vehicle.state] : "Last report only. Waiting for live mission telemetry." : "Waiting for a mission-state report.");
   faultList("vehicle-faults", vehicle?.fault_labels ?? [], Boolean(vehicle));
-  const sonar = topics.sonar?.fresh ? topics.sonar.data : null;
-  const scanning = sonar?.phase === "checking side clearance" || sonar?.phase === "scanning ahead";
-  const bypassing = ["turning off the tape", "leaving the tape", "aligning for the bypass",
-    "passing the obstacle", "turning toward the tape", "searching for the tape", "centring on the tape",
-    "realigning with the tape", "confirming the tape"].includes(sonar?.phase);
-  const forward = typeof sonar?.forward_mm === "number" ? sonar.forward_mm + " mm" : sonar?.forward_mm ?? "Unavailable";
-  const detour = sonar?.failure ? " · " + sonar.failure + " while " + sonar.failed_phase : "";
-  let sonarActivity = "Latest forward sonar: " + forward;
-  if (scanning) sonarActivity = "Sonar scan in progress";
-  else if (bypassing) sonarActivity = "Bypass in progress · " + sonar.phase;
-  else if (sonar?.phase === "complete" && sonar.forward_mm == null && vehicle?.state === "FOLLOW_LINE")
-    sonarActivity = "Tape reacquired. Waiting for forward sonar.";
-  el("sonar-detail").hidden = sonar === null;
-  text("sonar-detail", sonar ? sonarActivity + detour : null);
   faultList("motor-faults", motion?.fault_labels ?? [], Boolean(motion));
   if (motion?.faults & 2 && controller?.timing_gap_us != null) {
     el("motor-faults").textContent += ` · Gap ${(controller.timing_gap_us/1000).toFixed(2)} ms / limit ${(controller.timing_limit_us/1000).toFixed(2)} ms`;
@@ -189,7 +254,6 @@ function drawTelemetry(data) {
     text(side + "-rpm", motion?.[side + "_rpm"]);
     text(side + "-pwm", motion ? motion[side + "_pwm"] + "%" : null);
     el(side + "-pwm-bar").value = motion?.[side + "_pwm"] ?? 0;
-    text(side + "-progress", motion?.[side + "_progress"]);
     const black = line?.[side + "_black"];
     text(side + "-ir", line ? black ? "Black detected" : "No black" : null);
     el(side + "-ir-light").classList.toggle("black", Boolean(black));
@@ -197,31 +261,23 @@ function drawTelemetry(data) {
   text("motion-mode", motion?.mode_name);
   text("speed-level", motion?.speed_level);
   text("barcode", line?.barcode);
-  text("centre-ir", line ? line.centre_black ? "Black" : "Not set" : null);
-  text("terrain-height", terrain?.height_mm);
-  text("terrain-phase", terrain?.phase);
-  for (const [id, key] of [["nearest", "nearest_mm"], ["width", "width_mm"], ["left", "left_mm"], ["right", "right_mm"]]) {
-    const value = obstacle?.[key];
-    text("obstacle-" + id, typeof value === "number" ? value + " mm" : value);
+  el("barcode").classList.toggle("decoded", Boolean(line?.barcode_code));
+  text("terrain-height", terrain?.max_height_mm);
+  const obstacle = topics.obstacle?.fresh ? topics.obstacle.data : null;
+  let detected = obstacle?.detected ?? null;
+  if (topics.obstacle?.data?.detected === undefined) {
+    // Older firmware reported the interlock and forward echo in separate packets.
+    const detouring = topics.vehicle?.fresh && ["AVOIDING", "RECOVER_LINE"].includes(vehicle.state);
+    const forward = topics.sonar?.fresh ? topics.sonar.data.forward_mm : null;
+    if (detouring || (diagnostic?.fresh && controller.obstacle_blocked)) detected = true;
+    else if (forward === "Open" || (diagnostic?.fresh && controller.obstacle_blocked === false && forward != null)) detected = false;
   }
+  text("obstacle-status", detected === null ? "Unavailable" : detected ? "Detected" : "Not detected");
+  text("obstacle-width", obstacle?.width_mm == null ? null : obstacle.width_mm + " mm");
   const history = data?.motion_history ?? [];
   const maximum = Math.max(30, ...history.flatMap(p => [p.left_rpm, p.right_rpm]));
   for (const side of ["left", "right"]) {
     const path = history.map((p, i) => `${i ? "L" : "M"}${(i * 400 / Math.max(history.length - 1, 1)).toFixed(1)},${(66 - p[side + "_rpm"] * 60 / maximum).toFixed(1)}`).join(" ");
     el(side + "-rpm-path").setAttribute("d", path);
-  }
-  const events = el("events");
-  events.replaceChildren();
-  for (const event of data?.events ?? []) {
-    const row = document.createElement("li");
-    const time = document.createElement("time");
-    time.dateTime = event.time;
-    time.textContent = new Date(event.time).toLocaleTimeString();
-    const message = document.createElement("span");
-    message.textContent = event.message;
-    row.append(time, message); events.append(row);
-  }
-  if (!events.children.length) {
-    const empty = document.createElement("li");empty.textContent = data ? "Waiting for events." : "Dashboard connection unavailable.";events.append(empty);
   }
 }

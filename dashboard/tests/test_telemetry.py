@@ -7,8 +7,10 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app import Dashboard
 from mqtt_protocol import decode_telemetry
 
-def motion_packet(faults=0,left=30,right=24):
+def motion_packet(faults=0,left=30,right=24,compact=False):
     value=1|(1<<2)|(faults<<5)|(left<<9)|(right<<18)|(42<<27)|(35<<34)|(100<<41)|(200<<54)
+    if compact:
+        return (value & ((1 << 41) - 1)).to_bytes(6, 'little')
     return value.to_bytes(9,'little')
 
 class TelemetryTests(unittest.TestCase):
@@ -18,6 +20,35 @@ class TelemetryTests(unittest.TestCase):
         self.d.broker_connected=self.d.monitor_ready=True
     def send(self,kind,data,retained=False):
         self.d.on_message(None,None,SimpleNamespace(topic=self.d.root+'/'+kind,payload=data,retain=retained))
+    def test_session_maximum_and_reset(self):
+        def maximum(value):
+            self.send('terrain', (value | (6 << 11)).to_bytes(2, 'little'))
+            return self.d.snapshot()['telemetry']['terrain']
+        self.assertIsNone(maximum(2047)['data']['max_height_mm'])
+        for value in (7, 7, 9):  # Firmware sends max for completed heights 7, 5, 9.
+            sample = maximum(value)
+            self.assertTrue(sample['fresh'])
+            self.assertEqual(sample['data']['max_height_mm'], value)
+            self.assertIsNone(sample['data']['height_mm'])
+        self.now += 3
+        self.assertFalse(self.d.snapshot()['telemetry']['terrain']['fresh'])
+        # New boot has no completed measurement: never retain the old maximum.
+        self.assertIsNone(maximum(2047)['data']['max_height_mm'])
+        self.send('terrain', (9 | (6 << 11)).to_bytes(2, 'little'), retained=True)
+        self.assertIsNone(self.d.snapshot()['telemetry']['terrain']['data']['max_height_mm'])
+        self.assertEqual(maximum(5)['data']['max_height_mm'], 5)
+        self.d.on_disconnect(None, None, None, None, None)
+        self.d.broker_connected = self.d.monitor_ready = True
+        self.assertFalse(self.d.snapshot()['telemetry']['terrain']['fresh'])
+        self.assertTrue(maximum(5)['fresh'])
+
+    def test_maximum_format_rejects_invalid_values_and_padding(self):
+        for word in (2001 | (6 << 11), 9 | (6 << 11) | (1 << 14)):
+            with self.assertRaises(ValueError):
+                decode_telemetry('terrain', word.to_bytes(2, 'little'))
+        legacy = decode_telemetry('terrain', (24 | (3 << 11)).to_bytes(2, 'little'))
+        self.assertIsNone(legacy['max_height_mm'])  # Never relabel latest as maximum.
+
     def test_motion_and_faults(self):
         self.send('motion',motion_packet(4))
         item=self.d.snapshot()['telemetry']['motion']
@@ -30,7 +61,10 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(self.d.snapshot()['telemetry']['vehicle']['data']['state'],'FAULT')
     def test_all_wire_payloads(self):
         self.assertEqual(decode_telemetry('line',bytes([5|(2<<3)]))['barcode'],'B')
-        self.assertEqual(decode_telemetry('terrain',(125|(2<<11)).to_bytes(2,'little')),dict(height_mm=125,phase=2))
+        self.assertEqual(decode_telemetry('line',bytes([5|(6<<3)]))['barcode'],'F')
+        self.assertEqual(decode_telemetry('line',bytes([5|(26<<3)]))['barcode'],'Z')
+        self.assertEqual(decode_telemetry('terrain', (125 | (2 << 11)).to_bytes(2, 'little')),
+                         dict(height_mm=125, max_height_mm=None, phase=2, phase_label='Descending'))
         obstacle=(500|(80<<12)|(200<<23)|(300<<35)).to_bytes(6,'little')
         self.assertEqual(decode_telemetry('obstacle',obstacle),dict(nearest_mm=500,width_mm=80,left_mm=200,right_mm=300))
         uncertain=(140|(2047<<12)|(4094<<23)|(4095<<35)).to_bytes(6,'little')
@@ -46,6 +80,15 @@ class TelemetryTests(unittest.TestCase):
         self.assertFalse(state['telemetry']['motion']['fresh'])
         self.assertTrue(state['telemetry']['vehicle']['fresh'])
         self.assertIsNone(state['telemetry']['terrain']['data'])
+    def test_completed_hump_and_maximum_survive_unavailable_phase(self):
+        self.send('terrain', bytes.fromhex('16 b8 04'))  # Same frame as the firmware test.
+        report = self.d.snapshot()['telemetry']['terrain']
+        self.assertTrue(report['fresh'])
+        self.assertEqual(report['data'],
+                         dict(height_mm=22, max_height_mm=37, phase=3, phase_label='Unavailable'))
+        no_maximum = ((2047 << 13) | 22).to_bytes(3, 'little')
+        self.assertIsNone(decode_telemetry('terrain', no_maximum)['max_height_mm'])
+        self.assertEqual(decode_telemetry('terrain', bytes(3))['height_mm'], 0)
     def test_retained_and_bad_payloads_do_not_refresh(self):
         self.send('motion',motion_packet(),True)
         self.assertIsNone(self.d.snapshot()['telemetry']['motion']['data'])
@@ -61,8 +104,10 @@ class TelemetryTests(unittest.TestCase):
         self.send('motion',motion_packet())
         self.assertTrue(self.d.snapshot()['telemetry']['motion']['fresh'])
     def test_padding_and_range_rejection(self):
-        packets=[('vehicle',b'\x07'),('line',b'\xc0'),('line',b'\x28'),
+        packets=[('vehicle',b'\x07'),('line',bytes([27 << 3])),('line',b'\xff'),
                  ('terrain',(2001).to_bytes(2,'little')),('terrain',b'\x00\xc0'),
+                 ('terrain',(22 | (21 << 13)).to_bytes(3,'little')),
+                 ('terrain',(2001 << 13).to_bytes(3,'little')),
                  ('obstacle',(4001).to_bytes(6,'little')),('obstacle',(1<<47).to_bytes(6,'little')),
                  ('motion',(1<<67).to_bytes(9,'little')),('motion',(101<<27).to_bytes(9,'little'))]
         for kind,payload in packets:
@@ -85,6 +130,33 @@ class TelemetryTests(unittest.TestCase):
         self.assertTrue(self.d.snapshot()['start_allowed'])
         packet[0]=2
         with self.assertRaises(ValueError):decode_telemetry('controller',packet)
+
+    def test_compact_telemetry(self):
+        self.send('status', b'\x07')
+        motor = bytearray(motion_packet(2, compact=True))
+        motor[0] &= ~3
+        self.send('motion', motor)
+        self.send('controller', bytes.fromhex('03 05 04 03 01 02 03 e0 2e 00 00 98 3a'))
+        state = self.d.snapshot()
+        self.assertTrue(state['reset_allowed'])
+        self.assertFalse(state['start_allowed'])
+        controller = state['telemetry']['controller']['data']
+        self.assertEqual(controller['last_reject_label'], 'Motor fault latched')
+        self.assertEqual((controller['timing_gap_us'], controller['timing_limit_us']), (12000, 15000))
+        self.assertNotIn('line_age_ms', controller)
+        motion = state['telemetry']['motion']['data']
+        self.assertEqual(motion['right_pwm'], 35)
+        self.assertNotIn('right_progress', motion)
+        self.assertEqual(decode_telemetry('terrain', bytes.fromhex('16 18'))['height_mm'], 22)
+        for frame, detected, width in (
+            ('ff 07', None, None), ('50 10', True, 80), ('ff 17', True, None), ('50 08', False, 80)
+        ):
+            self.assertEqual(decode_telemetry('obstacle', bytes.fromhex(frame)),
+                             dict(detected=detected, width_mm=width))
+        for kind, frame in (('controller', '03 00 00 00 02 00 00 00 00 00 00 00 00'),
+                            ('motion', '00 00 00 00 00 02'), ('obstacle', '00 18')):
+            with self.assertRaises(ValueError):
+                decode_telemetry(kind, bytes.fromhex(frame))
 
     def test_timing_diagnostics_and_stopped_reset(self):
         packet=bytearray(31);packet[0]=2;packet[1]=5;packet[3]=3;packet[4]=1|2|64;packet[5]=2
@@ -137,6 +209,6 @@ class TelemetryTests(unittest.TestCase):
         client=SimpleNamespace(subscribe=lambda topics:(result.extend(topics) or (0,1)))
         self.d.on_connect(client,None,None,SimpleNamespace(is_failure=False),None)
         self.assertEqual({topic.rsplit('/',1)[-1] for topic,qos in result},
-                         {'status','ack','motion','line','terrain','obstacle','vehicle','controller','sonar'})
+                         {'status','ack','motion','line','terrain','obstacle','vehicle','controller','sonar','barcode_map'})
 
 if __name__=='__main__':unittest.main()

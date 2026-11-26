@@ -13,7 +13,7 @@
 #define S5_CENTRE_INDEX ((S5_SCAN_MAX_ANGLE - S5_CENTRE_ANGLE) / S5_FINE_STEP)
 #define S5_NO_TARGET S5_SCAN_POINTS
 #define S5_UNKNOWN_WIDTH 2047u
-#define S5_MAX_PROJECTED_FRONT_MM 511u
+#define S5_MAX_FRONT_MM 511u
 #define S5_PROFILE_TOLERANCE_MM 100u
 #define S5_TURN_CLEARANCE_MM 100u
 
@@ -35,12 +35,14 @@ typedef enum {
 typedef struct {
     unsigned nearest_mm : 12;
     unsigned width_mm : 11; /* Half the edge-to-edge estimate or observed span. */
-    unsigned front_mm : 9; /* Nearest longitudinal projection, capped at 511 mm. */
+    unsigned front_mm : 9; /* Nearest measured range in the forward corridor, capped at 511 mm. */
     unsigned left_mm : 12;
     unsigned right_mm : 12;
     unsigned angle_offset_deg : 7;
     unsigned left_path_mm : 12;
     unsigned right_path_mm : 12;
+    unsigned left_outward_mm : 12;
+    unsigned right_outward_mm : 12;
     unsigned width_status : 3;
     unsigned left_clipped : 1;
     unsigned right_clipped : 1;
@@ -62,6 +64,7 @@ bool s5_same_obstacle(unsigned range, unsigned reference);
 bool s5_background_beyond(unsigned range, unsigned reference);
 /* Confirm a background bearing from the full fine-scan sample window. */
 unsigned s5_edge_background(const unsigned *ranges, unsigned count, unsigned reference);
+unsigned s5_clearance_range(const unsigned *ranges, unsigned count);
 /* Optionally reports the lateral span between the outermost target echoes. */
 S5_PROFILE s5_profile(const S5_SCAN *scan, unsigned first, unsigned last, unsigned anchor,
                       unsigned *observed_span_mm);

@@ -8,6 +8,7 @@
 #include "../subsystem3/line_steering.h"
 #include "../subsystem5/subsystem5.h"
 #include "../subsystem4/subsystem4.h"
+#include "../subsystem4/b4_terrain_report.h"
 #ifndef VC_AUTO_START
 #if TM_MQTT
 #define VC_AUTO_START 0
@@ -21,20 +22,37 @@
 #define VC_ECHO_GRACE_MS 180u
 #define VC_RETRACE_MIN_MS 1800u
 #define VC_RETRACE_LONG_MS 3600u
+#define VC_BARCODE_APPROACH_MS 900u
+#define VC_BARCODE_RETRY_MARGIN_MM 10u
+#define VC_BARCODE_RETRY_WHEEL_SKEW_MM 8u
 #define S5_LINE_DARK 420
 #define S5_CENTER_TAPE_DARK 250
 #define S5_WIDE_MARKING 750
+#define VC_JUNCTION_CONFIRM_SAMPLES 3u
 #define VC_WAKE 1u
 
 enum { SCAN_OFF, SCAN_READY, SCAN_ACTIVE };
 static ID guard, work_event;
 static VEHICLE_SNAPSHOT data;
 static VC_MODEL model;
+static BARCODE_MAP barcode_map = {
+    .left = 'A' - 'A' + 1, .right = 'F' - 'A' + 1,
+    .straight = 'D' - 'A' + 1, .uturn = 'C' - 'A' + 1,
+};
 static struct {
     unsigned start:1, stop:1, line_stop:1, auto_start:1, reset:1;
     unsigned obstacle_monitor:1, profile_valid:1, scan:2, follow_blocked:1;
     unsigned last_echo:3, echo_grace_used:1;
+    unsigned barcode_armed:2, barcode_turn:2, junction_samples:2;
+    unsigned barcode_retry_mm:9;
 } pending;
+static bool tracking_straight;
+static uint32_t straight_since;
+static struct {
+    S2_TRAVEL entry, retry_start;
+    uint32_t checked_at;
+    unsigned retry_window_mm:9, capturing:1, safe_to_retrace:1;
+} barcode_path;
 static uint32_t reset_started, reset_refreshed;
 static S5_RANGE_GATE obstacle_range;
 static uint32_t obstacle_range_at, full_profile_at, scan_request_id;
@@ -57,9 +75,9 @@ static bool range_valid(uint32_t now)
     return pending.obstacle_monitor && s5_range_available(obstacle_range.range_mm) &&
            now - obstacle_range_at <= S5_RANGE_MAX_AGE_MS;
 }
-static bool obstacle_blocked(uint32_t now)
+static bool obstacle_blocked(void)
 {
-    return pending.obstacle_monitor && (pending.follow_blocked || !range_valid(now));
+    return pending.obstacle_monitor && pending.follow_blocked;
 }
 static uint32_t now_ms(void) { SYSTIM t;tk_get_otm(&t);return t.lo; }
 static BOOL lock(void) { return guard>0 && tk_loc_mtx(guard,TMO_FEVR)>=E_OK; }
@@ -86,14 +104,125 @@ ER vehicle_init(void)
     __atomic_store_n(&work_event, id, __ATOMIC_RELEASE);
     return E_OK;
 }
-void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned barcode)
+static VC_NAV barcode_nav(unsigned decoded)
+{
+    if (decoded == barcode_map.left) return VC_NAV_LEFT;
+    if (decoded == barcode_map.right) return VC_NAV_RIGHT;
+    if (decoded == barcode_map.uturn) return VC_NAV_UTURN;
+    /* The straight instruction continues using normal line tracking. */
+    return VC_NAV_NONE;
+}
+
+BOOL vehicle_set_barcode_map(BARCODE_MAP map)
+{
+    if (!barcode_map_valid(map) || !lock()) return FALSE;
+    S2_STATUS motor;
+    bool busy = false;
+    BOOL stopped = !vc_core_running(&model) && !pending.start && !pending.auto_start &&
+                   !pending.stop && !pending.reset &&
+                   motion_get_feedback(&motor, NULL, &busy) && !busy &&
+                   s2_get_bits(&motor, 9, 9) <= 2 && s2_get_bits(&motor, 18, 9) <= 2;
+    if (stopped) {
+        barcode_map = map;
+        pending.barcode_armed = pending.barcode_turn = VC_NAV_NONE;
+        pending.junction_samples = 0;
+        data.barcode = 0;
+    }
+    unlock();
+    return stopped;
+}
+
+BOOL vehicle_get_barcode_map(BARCODE_MAP *map)
+{
+    if (!map || !lock()) return FALSE;
+    *map = barcode_map;
+    unlock();
+    return TRUE;
+}
+
+static unsigned wheel_travel_mm(uint32_t pulses, unsigned cpr_x10)
+{
+    return (unsigned)((uint64_t)pulses * (WHEEL_DIAMETER_MM * 3141u) / (cpr_x10 * 100u));
+}
+
+static void record_barcode_path(BARCODE_SCAN scan, bool safe_step, uint32_t now)
+{
+    if (scan == BARCODE_SCAN_IDLE) {
+        barcode_path.capturing = false;
+        return;
+    }
+    S2_TRAVEL travel;
+    if (scan == BARCODE_SCAN_ACTIVE && !barcode_path.capturing) {
+        barcode_path.capturing = true;
+        barcode_path.checked_at = now;
+        barcode_path.safe_to_retrace = tracking_straight && now - straight_since >= VC_BARCODE_APPROACH_MS &&
+                                        motion_get_travel(&barcode_path.entry);
+        if (barcode_path.safe_to_retrace && barcode_path.retry_window_mm) {
+            unsigned forward = wheel_travel_mm(barcode_path.entry.left - barcode_path.retry_start.left,
+                                               LEFT_CPR_X10);
+            if (forward <= barcode_path.retry_window_mm) barcode_path.safe_to_retrace = false;
+            else barcode_path.retry_window_mm = 0;
+        }
+    }
+    barcode_path.safe_to_retrace &= safe_step;
+    bool missed = scan == BARCODE_SCAN_MISSED;
+    if (!barcode_path.capturing) return;
+    if (missed) barcode_path.capturing = false;
+    if (!barcode_path.safe_to_retrace ||
+        (!missed && now - barcode_path.checked_at < VC_REFRESH_MS)) return;
+
+    barcode_path.checked_at = now;
+    if (!motion_get_travel(&travel)) {
+        barcode_path.safe_to_retrace = false;
+        return;
+    }
+    unsigned left = wheel_travel_mm(travel.left - barcode_path.entry.left, LEFT_CPR_X10);
+    unsigned right = wheel_travel_mm(travel.right - barcode_path.entry.right, RIGHT_CPR_X10);
+    if (left > right + VC_BARCODE_RETRY_WHEEL_SKEW_MM ||
+        right > left + VC_BARCODE_RETRY_WHEEL_SKEW_MM) {
+        barcode_path.safe_to_retrace = false;
+        return;
+    }
+    unsigned distance = (left + right) / 2u + VC_BARCODE_RETRY_MARGIN_MM;
+    if (missed && distance > VC_BARCODE_RETRY_MARGIN_MM && distance <= VC_BARCODE_REVERSE_MAX_MM)
+        pending.barcode_retry_mm = distance;
+}
+
+void vehicle_submit_line(INT l,INT c,INT r,INT left,INT right,BOOL stop,unsigned decoded,
+                         BARCODE_SCAN scan)
 {
     if(l<0||l>1000||c<0||c>1000||r<0||r>1000||left<0||left>126||right<0||right>126||
-       (left&1)||(right&1)||barcode>4){vehicle_invalidate_line();return;}
+       (left&1)||(right&1)||decoded>26){vehicle_invalidate_line();return;}
     if(!lock())return;
     uint32_t now=now_ms();
     data.l=l;data.c=c;data.r=r;data.left_rpm=left;data.right_rpm=right;
-    data.barcode=barcode;data.line_stop=stop;data.line_valid=TRUE;data.line_timestamp_ms=now;
+    data.line_stop=stop;data.line_valid=TRUE;data.line_timestamp_ms=now;
+    if (model.state == VC_FOLLOW_LINE && !pending.stop) {
+        bool crossing = l >= S5_WIDE_MARKING && r >= S5_WIDE_MARKING;
+        bool safe_step = !stop && !crossing && left >= S3_CRUISE_RPM - S3_CORRECTION_STEP_RPM &&
+                         right >= S3_CRUISE_RPM - S3_CORRECTION_STEP_RPM &&
+                         left <= S3_CRUISE_RPM && right <= S3_CRUISE_RPM;
+        record_barcode_path(scan, safe_step, now);
+        if (decoded) {
+            pending.barcode_retry_mm = 0;
+            barcode_path.retry_window_mm = 0;
+            data.barcode = decoded;
+            VC_NAV nav = barcode_nav(decoded);
+            if (nav != VC_NAV_NONE || decoded == barcode_map.straight)
+                pending.barcode_armed = nav;
+        }
+        if (!crossing) {
+            pending.junction_samples = 0;
+        } else {
+            if (pending.junction_samples < VC_JUNCTION_CONFIRM_SAMPLES) {
+                ++pending.junction_samples;
+            }
+            if (pending.junction_samples == VC_JUNCTION_CONFIRM_SAMPLES && pending.barcode_armed) {
+                pending.barcode_turn = pending.barcode_armed;
+                pending.barcode_armed = VC_NAV_NONE;
+            }
+        }
+    }
     /* A stop recommendation must survive a newer non-stop sensor sample. */
     if (stop && (model.state == VC_FOLLOW_LINE || pending.start)) pending.line_stop = true;
     unlock();
@@ -103,6 +232,9 @@ void vehicle_invalidate_line(void)
 {
     if (!lock()) return;
     data.line_valid = FALSE;
+    pending.junction_samples = 0;
+    barcode_path.capturing = false;
+    pending.barcode_retry_mm = 0;
     unlock();
     vehicle_notify_feedback();
 }
@@ -152,7 +284,9 @@ static VC_INPUT controller_input(BOOL ready, BOOL linked, unsigned faults, bool 
         .line_valid = data.line_valid,
         .line_age_ms = now - data.line_timestamp_ms,
         .left_rpm = data.left_rpm, .right_rpm = data.right_rpm,
-        .obstacle_blocked = obstacle_blocked(now),
+        .barcode_turn = pending.barcode_turn,
+        .barcode_retry_mm = pending.barcode_retry_mm,
+        .obstacle_blocked = obstacle_blocked(),
         .avoidance = {
             .now = now, .range_at = obstacle_range_at, .range_mm = obstacle_range.range_mm,
             .range_valid = range_valid(now), .profile_at = full_profile_at,
@@ -193,11 +327,18 @@ BOOL vehicle_request_start(void)
     else tm_printf((UB*)"[VEHICLE] START rejected: blocker=%u\n", (unsigned)block);
     return ok;
 }
-BOOL vehicle_submit_terrain(unsigned height,unsigned phase)
+BOOL vehicle_submit_terrain(unsigned height, unsigned max_height, unsigned phase)
 {
-    if(height>2000||phase>5||!lock())return FALSE;
-    data.height_mm=height;data.terrain_phase=phase;
-    data.terrain_timestamp_ms=now_ms();data.terrain_valid=TRUE;unlock();return TRUE;
+    if (height > B4_TERRAIN_HEIGHT_MAX_MM || phase > B4_TERRAIN_PHASE_UNAVAILABLE ||
+        (max_height != B4_TERRAIN_HEIGHT_UNAVAILABLE &&
+         (max_height < height || max_height > B4_TERRAIN_HEIGHT_MAX_MM)) || !lock()) return FALSE;
+    data.height_mm = height;
+    data.max_height_mm = max_height;
+    data.terrain_phase = phase;
+    data.terrain_timestamp_ms = now_ms();
+    data.terrain_valid = TRUE;
+    unlock();
+    return TRUE;
 }
 void vehicle_enable_obstacle_monitor(void)
 {
@@ -215,7 +356,7 @@ static void submit_obstacle_reading(unsigned range, S5_ECHO_STATE echo)
 {
     if (!lock()) return;
     uint32_t now = now_ms();
-    if (s5_avoid_executing(model.avoidance.phase)) {
+    if (s5_avoid_ranging_paused(&model.avoidance)) {
         unlock();
         return;
     }
@@ -233,8 +374,8 @@ static void submit_obstacle_reading(unsigned range, S5_ECHO_STATE echo)
     if (accepted) {
         obstacle_range_at = now;
         pending.echo_grace_used = false;
-        /* Unknown range already blocks independently. Preserve the last
-           measured hysteresis decision without treating silence as near. */
+        /* Only a measured range can trigger a close obstacle. An unknown
+           range cannot clear a close obstacle that was already detected. */
         if (s5_range_available(range)) {
             unsigned follow_limit = pending.follow_blocked ? S5_FOLLOW_CLEAR_MM : S5_FOLLOW_STOP_MM;
             pending.follow_blocked = range <= follow_limit;
@@ -267,7 +408,7 @@ void vehicle_submit_obstacle_ping(S5_PING ping)
 BOOL vehicle_obstacle_ranging_paused(void)
 {
     if (!lock()) return FALSE;
-    BOOL paused = s5_avoid_executing(model.avoidance.phase);
+    BOOL paused = s5_avoid_ranging_paused(&model.avoidance);
     unlock();
     return paused;
 }
@@ -334,12 +475,13 @@ BOOL vehicle_get_snapshot(VEHICLE_SNAPSHOT *out)
     out->start_pending=pending.start;out->stop_pending=pending.stop;out->reset_pending=pending.reset;
     S5_PHASE phase = model.avoidance.phase;
     bool executing = s5_avoid_executing(phase);
-    out->obstacle_blocked = !executing && obstacle_blocked(out->timestamp_ms);
-    /* Forward samples naturally age out during the initial sweep. */
+    out->obstacle_blocked = !executing && obstacle_blocked();
+    /* Report an echo fault when it affects avoidance. Otherwise the sonar
+       topic reports an unavailable range independently of the fault flags. */
     bool scanning = phase == S5_PROFILE_PATH && !pending.profile_valid;
     bool echo_fault = phase == S5_FAILED && model.avoidance.failure == S5_FAIL_ECHO;
-    out->obstacle_no_echo = pending.obstacle_monitor &&
-                            (echo_fault || (!executing && !scanning && !range_valid(out->timestamp_ms)));
+    out->obstacle_no_echo = echo_fault ||
+                            (out->obstacle_blocked && !scanning && !range_valid(out->timestamp_ms));
     out->avoidance_phase = model.avoidance.phase;
     out->avoidance_side = model.avoidance.side;
     out->avoidance_failure = model.avoidance.failure;
@@ -361,8 +503,6 @@ BOOL vehicle_is_following(void)
 }
 void vehicle_record_telemetry_drop(void)
 { if(lock()){if(data.telemetry_drops!=0xffffffffu)data.telemetry_drops++;unlock();} }
-static bool tracking_straight;
-static uint32_t straight_since;
 static S5_MOTION drive_feedback(const S2_STATUS *status, const S2_REPLY *reply,
                                 bool busy, uint32_t now)
 {
@@ -378,34 +518,37 @@ static S5_MOTION drive_feedback(const S2_STATUS *status, const S2_REPLY *reply,
     }
     if (!matched || !reply->accepted) return S5_MOTION_FAILED;
     if (busy) return S5_MOTION_PENDING;
-    if ((drive.command & 15u) == S2_ARC)
-        return s2_core_arc_finished((drive.command >> 4) != 0, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
+    if ((drive.command & 15u) == S2_CRAWL_PIVOT)
+        return s2_core_pivot_reached(drive.command >> 5, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
     return s2_core_maneuver_finished(drive.command >> 4, status) ? S5_MOTION_DONE : S5_MOTION_FAILED;
 }
 
 static void submit_output(const VC_INPUT *in, const VC_OUTPUT *out, const S2_REPLY *reply,
-                          bool detour)
+                          bool bounded)
 {
-    if (out->stop || (!detour && !out->left_rpm && !out->right_rpm)) {
+    if (out->stop || (!bounded && !out->left_rpm && !out->right_rpm)) {
         if (!in->stop && (drive.moving || out->maneuver.action == S5_STOP)) motion_stop();
         drive = (__typeof__(drive)){0};
         return;
     }
 
     bool submitted;
-    if (detour) {
+    if (bounded) {
         if (in->avoidance.motion == S5_MOTION_DONE) {
             drive.command = 0;
             drive.moving = false;
         }
         S5_ACTION action = out->maneuver.action;
-        if (action == S5_WAIT || action == S5_RESCAN) return;
-        if (action == S5_REVERSE)
+        if (out->pivot_degrees)
+            submitted = motion_crawl_pivot(out->pivot_degrees, out->pivot_right, &drive.command);
+        else if (action == S5_WAIT || action == S5_RESCAN)
+            return;
+        else if (action == S5_REVERSE)
             submitted = motion_maneuver_reverse(out->maneuver.distance_mm, &drive.command);
         else if (action == S5_ADVANCE)
             submitted = motion_maneuver(out->maneuver.distance_mm, false, &drive.command);
         else
-            submitted = motion_arc(action == S5_ARC_RIGHT, &drive.command);
+            submitted = motion_crawl_pivot(S5_PIVOT_DEG, action == S5_PIVOT_RIGHT, &drive.command);
         drive.velocity = false;
     } else {
         bool refresh = !drive.moving || in->avoidance.now - drive.refreshed >= VC_REFRESH_MS;
@@ -434,9 +577,9 @@ static const char *const avoidance_phase_name[] = {
     [S5_PASS] = "passing obstacle",
     [S5_TURN_IN] = "turning toward original line",
     [S5_FIND_LINE] = "searching for the line",
-    [S5_CENTER_LINE] = "positioning for the final arc",
+    [S5_CENTER_LINE] = "positioning for the final pivot",
     [S5_ALIGN_LINE] = "realigning with the line",
-    [S5_COMPLETE] = "line reacquired, resuming line following",
+    [S5_COMPLETE] = "avoidance complete, resuming line following",
     [S5_FAILED] = "detour stopped",
     [S5_CHECK_LINE] = "confirming the line",
     [S5_BACK_UP] = "reversing for another scan",
@@ -455,6 +598,13 @@ static TMO vehicle_service_once(void)
     VC_OUTPUT out;
     in.avoidance.motion = drive_feedback(&status, &reply, busy, now);
     in.drive_failed = drive.failed;
+    if (model.state == VC_TURNING &&
+        (in.avoidance.motion == S5_MOTION_PENDING || in.avoidance.motion == S5_MOTION_DONE) &&
+        (drive.command & 15u) == S2_CRAWL_PIVOT) {
+        unsigned min_degrees = model.junction.phase == VC_JUNCTION_SWEEP ? 3u :
+                               (model.junction.uturn ? 180u : 90u) - VC_JUNCTION_SEARCH_DEG;
+        in.pivot_in_window = s2_core_pivot_reached(min_degrees, &status);
+    }
     unsigned left_measured = s2_get_bits(&status, 9, 9);
     unsigned right_measured = s2_get_bits(&status, 18, 9);
     in.avoidance.stopped = ready && !busy && left_measured <= 2 && right_measured <= 2;
@@ -503,9 +653,22 @@ static TMO vehicle_service_once(void)
     if (pending.start && blocker != VC_START_READY) data.last_start_reject = blocker;
     pending.start = pending.stop = pending.line_stop = false;
     unsigned previous_reason = model.reason;
+    unsigned previous_state = model.state;
+    unsigned previous_junction = model.junction.phase;
     S5_PHASE previous = model.avoidance.phase;
-    bool was_executing = s5_avoid_executing(previous);
+    bool was_ranging_paused = s5_avoid_ranging_paused(&model.avoidance);
     vc_core_step(&model, &in, &out);
+    pending.barcode_retry_mm = 0;
+    if (previous_state == VC_RETRY_BARCODE && model.state == VC_FOLLOW_LINE) {
+        barcode_path.retry_window_mm = model.barcode_retry.distance_mm;
+        if (!motion_get_travel(&barcode_path.retry_start)) barcode_path.retry_window_mm = 0;
+    }
+    if (model.state != VC_FOLLOW_LINE) {
+        barcode_path.capturing = false;
+        barcode_path.retry_window_mm = 0;
+        pending.barcode_armed = pending.barcode_turn = VC_NAV_NONE;
+        pending.junction_samples = 0;
+    }
     bool reset_done = false;
     if (in.reset) {
         if (in.avoidance.stopped && !in.motor_faults) {
@@ -528,6 +691,7 @@ static TMO vehicle_service_once(void)
         if (reset_done) pending.reset = false;
     }
     S5_PHASE phase = model.avoidance.phase;
+    bool check_left = model.avoidance.check_left;
     unsigned side = model.avoidance.side;
     unsigned offset = model.avoidance.offset_mm;
     unsigned pass = model.avoidance.pass_mm;
@@ -540,15 +704,16 @@ static TMO vehicle_service_once(void)
     unsigned right_samples = model.avoidance.right_edge.samples;
     if (phase == S5_FIND_LINE && phase != previous)
         tape_search_peak = (__typeof__(tape_search_peak)){0};
-    bool executing = s5_avoid_executing(phase);
-    if (executing && !was_executing) {
-        /* The next forward range must be from the new heading after rejoining. */
+    bool ranging_paused = s5_avoid_ranging_paused(&model.avoidance);
+    if (ranging_paused && !was_ranging_paused) {
+        /* Discard readings from a heading the car is leaving. */
         obstacle_range = (S5_RANGE_GATE){.range_mm = S5_UNKNOWN_RANGE, .blocked = true};
         pending.follow_blocked = pending.echo_grace_used = false;
     }
     /* Serialize dispatch with the request latch, so STOP can cancel an entire
        batch before any later movement is submitted. */
-    submit_output(&in, &out, &reply, vc_core_detouring(&model));
+    submit_output(&in, &out, &reply, vc_core_detouring(&model) ||
+                  model.state == VC_TURNING || model.state == VC_RETRY_BARCODE);
     if (phase != previous || out.maneuver.action == S5_RESCAN) {
         pending.scan = SCAN_OFF;
         if (phase == S5_PROFILE_PATH) pending.profile_valid = false;
@@ -565,6 +730,8 @@ static TMO vehicle_service_once(void)
     }
     data.state = model.state;
     unsigned reason = data.reason = model.reason;
+    unsigned state = model.state;
+    unsigned junction = model.junction.phase;
     unsigned failure = model.avoidance.failure;
     unsigned last_echo = pending.last_echo;
     data.motor_faults = in.motor_faults;
@@ -583,8 +750,22 @@ static TMO vehicle_service_once(void)
     bool dispatch_failed = drive.failed;
     unlock();
 
-    if (scan || (was_executing && !executing)) subsystem5_wake();
+    if (scan || (was_ranging_paused && !ranging_paused)) subsystem5_wake();
     if (dispatch_failed) vehicle_notify_feedback();
+    if (out.maneuver.action == S5_REVERSE && state == VC_RETRY_BARCODE && !dispatch_failed)
+        tm_printf((UB*)"[S3] barcode missed, backing up %u mm for one more read\n",
+                  (unsigned)out.maneuver.distance_mm);
+    if (previous_state != VC_TURNING && state == VC_TURNING)
+        tm_printf((UB*)"[S3] junction confirmed: advancing to the axle before turning\n");
+    if (!dispatch_failed && out.pivot_degrees)
+        tm_printf((UB*)"[S3] junction %s, up to %u deg %s\n",
+                  junction == VC_JUNCTION_SWEEP ? "rescan" : "turn",
+                  out.pivot_degrees, out.pivot_right ? "right" : "left");
+    if (state == VC_TURNING && junction == VC_JUNCTION_SETTLE && previous_junction != junction)
+        tm_printf((UB*)"[S3] branch tape confirmed, settling before line following\n");
+    if (previous_state == VC_TURNING && state == VC_FAULT)
+        tm_printf((UB*)"[S3] junction stopped: phase=%u reason=%u motor faults=%u\n",
+                  previous_junction, reason, in.motor_faults);
     if (reason == VC_REASON_STALE_LINE && previous_reason != VC_REASON_STALE_LINE) {
         tm_printf((UB*)"[VC] stopped: local IR sample %s, last update %u ms ago\n",
                   in.line_valid ? "expired" : "invalid", (unsigned)in.line_age_ms);
@@ -592,17 +773,19 @@ static TMO vehicle_service_once(void)
     }
     if (out.maneuver.action == S5_RESCAN)
         tm_printf((UB*)"[S5] scan inconclusive, retrying while stopped\n");
-    if (!dispatch_failed && (out.maneuver.action == S5_ARC_LEFT || out.maneuver.action == S5_ARC_RIGHT))
-        tm_printf((UB*)"[S5] commanding %u deg rolling turn %s\n", S2_ARC_ANGLE_DEG,
-                  out.maneuver.action == S5_ARC_LEFT ? "left" : "right");
+    if (!dispatch_failed && (out.maneuver.action == S5_PIVOT_LEFT || out.maneuver.action == S5_PIVOT_RIGHT))
+        tm_printf((UB*)"[S5] commanding %u deg pivot %s\n", S5_PIVOT_DEG,
+                  out.maneuver.action == S5_PIVOT_LEFT ? "left" : "right");
     if (previous != phase) {
         tm_printf((UB*)"[S5] avoidance phase=%u side=%u at %u ms: %s\n",
                   (unsigned)phase, side, (unsigned)now, avoidance_phase_name[phase]);
         if (phase == S5_TURN_OUT)
             tm_printf((UB*)"[S5] planned bypass %s, sideways target=%u mm, straight pass=%u mm\n",
                       side == S5_LEFT ? "T (left)" : "R (right)", offset, pass);
+        if (phase == S5_SHIFT_OUT && check_left)
+            tm_printf((UB*)"[S5] left fallback, checking clearance with the servo centred\n");
         if (phase == S5_CENTER_LINE)
-            tm_printf((UB*)"[S5] tape crossings left=%u mm right=%u mm, final arc starts at %u mm\n",
+            tm_printf((UB*)"[S5] tape crossings left=%u mm right=%u mm, final pivot starts at %u mm\n",
                       left_entry, right_entry, align_at);
         if (phase == S5_FAILED || phase == S5_WAIT_PATH)
             tm_printf((UB*)"[S5] stopped during %s, detour reason=%u vehicle reason=%u, "

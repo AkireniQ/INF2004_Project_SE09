@@ -33,7 +33,7 @@ static void test_echo_pairing(void)
     s5_capture_edge(&capture, 38120, false, true, 60000);
     S5_PING late = s5_capture_result(&capture, 38120, true, false);
     assert(late.state == S5_ECHO_LATE && late.pulse_us == 38000);
-    assert(late.range_mm == S5_UNKNOWN_RANGE);
+    assert(late.range_mm == S5_OPEN_RANGE);
     capture.state = S5_CAPTURE_RISE;
     S5_PING rise = s5_capture_result(&capture, 30100, true, false);
     assert(rise.state == S5_ECHO_QUIET && rise.range_mm == S5_UNKNOWN_RANGE);
@@ -55,15 +55,35 @@ static void test_rcwl_no_target(void)
     S5_PING ping = s5_capture_result(&capture, 47495, true, false);
     assert(ping.state == S5_ECHO_NO_TARGET && ping.pulse_us == 47095);
     assert(ping.range_mm == S5_OPEN_RANGE);
-    assert(s5_range_from_echo(ping.pulse_us) == S5_UNKNOWN_RANGE);
-    assert(s5_classify_echo(S5_ECHO_LATE, 46899).range_mm == S5_UNKNOWN_RANGE);
-    assert(s5_classify_echo(S5_ECHO_LATE, 47301).range_mm == S5_UNKNOWN_RANGE);
+    assert(s5_range_from_echo(ping.pulse_us) == S5_OPEN_RANGE);
+    assert(s5_classify_echo(S5_ECHO_LATE, 46899).range_mm == S5_OPEN_RANGE);
+    assert(s5_classify_echo(S5_ECHO_LATE, 47301).range_mm == S5_OPEN_RANGE);
 
     S5_RANGE_GATE gate = {.range_mm = 160, .blocked = true};
     assert(!s5_accept_range(&gate, ping.range_mm) && gate.blocked);
     assert(s5_accept_range(&gate, S5_UNKNOWN_RANGE) && gate.blocked);
     assert(!s5_accept_range(&gate, ping.range_mm) && gate.blocked);
     assert(s5_accept_range(&gate, ping.range_mm) && !gate.blocked);
+}
+
+static void test_extended_echo_capture(void)
+{
+    S5_ECHO_CAPTURE capture = {.triggered_at = 100, .state = S5_CAPTURE_RISE};
+    s5_capture_edge(&capture, 400, true, false, S5_ECHO_EXTENDED_US);
+    s5_capture_edge(&capture, 70400, false, true, S5_ECHO_EXTENDED_US);
+    S5_PING far = s5_capture_result(&capture, 70400, true, false);
+    assert(far.state == S5_ECHO_LATE && far.pulse_us == 70000 && far.range_mm == S5_OPEN_RANGE);
+
+    capture = (S5_ECHO_CAPTURE){.triggered_at = 100, .state = S5_CAPTURE_RISE};
+    s5_capture_edge(&capture, 29600, true, false, S5_ECHO_EXTENDED_US);
+    s5_capture_edge(&capture, 30700, false, true, S5_ECHO_EXTENDED_US);
+    S5_PING near = s5_capture_result(&capture, 30700, true, false);
+    assert(near.state == S5_ECHO_LATE && near.range_mm == 189);
+
+    capture.state = S5_CAPTURE_FALL;
+    s5_capture_edge(&capture, 100100, false, true, S5_ECHO_EXTENDED_US);
+    S5_PING expired = s5_capture_result(&capture, 100100, true, false);
+    assert(expired.state == S5_ECHO_FALL_TIMEOUT && expired.range_mm == S5_UNKNOWN_RANGE);
 }
 
 static void test_scan_and_profile(void)
@@ -325,12 +345,58 @@ static void test_track_replay_sees_no_edge_on_either_side(void)
            !profile.left_edge_valid && !profile.right_edge_valid);
 }
 
+static void test_pivot_clearance_from_track_sweeps(void)
+{
+    /* Two sweeps from 135 to 30 degrees, with and without nearby background. */
+    const unsigned sweeps[][22] = {
+        {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE,
+         148, 138, 136, 135, 131, 128, 130,
+         129, 129, 131, 129, 130, 128, 132, 133, 132, 134, 142},
+        {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE,
+         168, 157, 146, 152, 144, 144, 144,
+         141, 143, 141, 143, 143, 136, 143, 143, 146, 148, 150},
+    };
+    const unsigned first = S5_CENTRE_INDEX - 9u;
+    const unsigned last = S5_CENTRE_INDEX + 12u;
+    const unsigned expected_front[] = {128, 136};
+    for (unsigned run = 0; run < sizeof(sweeps) / sizeof(*sweeps); ++run) {
+        S5_SCAN scan = {0};
+        for (unsigned i = first; i <= last; ++i)
+            s5_scan_set(&scan, i, sweeps[run][i - first]);
+        S5_PROFILE profile = s5_profile(&scan, first, last, S5_CENTRE_INDEX, NULL);
+        assert(profile.front_mm == expected_front[run]);
+
+        /* An echo actually within the turn margin still rejects the pivot. */
+        s5_scan_set(&scan, S5_CENTRE_INDEX + 9u, S5_TURN_CLEARANCE_MM - 5u);
+        profile = s5_profile(&scan, first, last, S5_CENTRE_INDEX, NULL);
+        assert(profile.front_mm == S5_TURN_CLEARANCE_MM - 5u);
+    }
+}
+
+static void test_clearance_with_unsteady_background(void)
+{
+    const unsigned varied[] = {910, S5_UNKNOWN_RANGE, 705, 1160, 835};
+    assert(s5_clearance_range(varied, 5) == 705);
+    const unsigned incomplete[] = {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, 800, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE};
+    assert(s5_clearance_range(incomplete, 5) == S5_UNKNOWN_RANGE);
+    const unsigned no_returns[] = {S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE, S5_UNKNOWN_RANGE};
+    assert(s5_clearance_range(no_returns, 3) == S5_UNKNOWN_RANGE);
+    const unsigned open[] = {S5_OPEN_RANGE, S5_UNKNOWN_RANGE, S5_OPEN_RANGE};
+    assert(s5_clearance_range(open, 3) == S5_OPEN_RANGE);
+    assert(s5_clearance_range(open, 2) == S5_UNKNOWN_RANGE);
+    const unsigned mixed[] = {S5_OPEN_RANGE, S5_UNKNOWN_RANGE, 705};
+    assert(s5_clearance_range(mixed, 3) == 705);
+    const unsigned near[] = {95, S5_OPEN_RANGE, S5_OPEN_RANGE};
+    assert(s5_clearance_range(near, 3) == 95);
+}
+
 int main(void)
 {
     test_centered_box_edge_coordinates();
     test_track_replay_sees_no_edge_on_either_side();
     test_echo_pairing();
     test_rcwl_no_target();
+    test_extended_echo_capture();
     test_scan_and_profile();
     test_observed_span_without_clearance();
     test_repeat_and_narrow_target();
@@ -340,6 +406,8 @@ int main(void)
     test_narrow_face_at_track_distance();
     test_track_left_limit();
     test_bench_background_returns();
+    test_clearance_with_unsteady_background();
+    test_pivot_clearance_from_track_sweeps();
     test_80_mm_bench_target_with_unstable_corner_ranges();
     puts("PASS echo capture, scan packing, partial width estimates, sweep limits and bench background replay");
 }

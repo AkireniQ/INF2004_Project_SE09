@@ -1,6 +1,7 @@
 /* Host exercise of the production dispatcher with a simulated motion owner. */
 #include <assert.h>
 #include <stdio.h>
+#include "../../app_program/subsystem1/s1_wire.h"
 #include "../../app_program/subsystem4/b4_safety_dispatch.h"
 #include "../../app_program/subsystem4/b4_terrain_report.h"
 #include "../../app_program/vehicle_controller/vehicle_controller.c"
@@ -13,6 +14,7 @@ static unsigned search_progress;
 static unsigned connection = 7;
 static bool motor_busy;
 static S2_STATUS motor;
+static S2_TRAVEL encoder_travel;
 static S2_REPLY motor_reply;
 static uint16_t queued_command;
 
@@ -58,13 +60,20 @@ unsigned s2_core_distance_travelled_mm(const S2_STATUS *status)
 { (void)status; return search_progress; }
 bool s2_core_maneuver_finished(unsigned arg, const S2_STATUS *status)
 { (void)arg; return s2_get_bits(status, 0, 2) == 0; }
-bool s2_core_arc_finished(bool right, const S2_STATUS *status)
-{ (void)right; return s2_get_bits(status, 0, 2) == 0; }
+static unsigned pivot_angle;
+bool s2_core_pivot_reached(unsigned degrees, const S2_STATUS *status)
+{ (void)status; return pivot_angle >= degrees; }
 bool motion_get_feedback(S2_STATUS *status, S2_REPLY *reply, bool *busy)
 {
     *status = motor;
     if (reply) *reply = motor_reply;
     *busy = motor_busy;
+    return true;
+}
+
+bool motion_get_travel(S2_TRAVEL *travel)
+{
+    *travel = encoder_travel;
     return true;
 }
 
@@ -100,10 +109,11 @@ bool motion_maneuver_reverse(unsigned mm, uint16_t *command)
     motor_busy = true;
     return true;
 }
-bool motion_arc(bool right, uint16_t *command)
+bool motion_crawl_pivot(unsigned degrees, bool right, uint16_t *command)
 {
     assert(!queued_command);
-    *command = queued_command = (uint16_t)(S2_ARC | ((unsigned)right << 4));
+    pivot_angle = 0;
+    *command = queued_command = (uint16_t)(S2_CRAWL_PIVOT | ((degrees * 2u + right) << 4));
     motor_busy = true;
     return true;
 }
@@ -149,8 +159,10 @@ static unsigned vehicle_state(void)
 
 static void complete_move(void)
 {
+    unsigned command = queued_command;
     motor_acknowledge(S2_REPLY_OK);
     work();
+    if ((command & 15u) == S2_CRAWL_PIVOT) pivot_angle = command >> 5;
     motor_stopped();
     work();
 }
@@ -158,7 +170,7 @@ static void complete_move(void)
 static void settle_step(void)
 {
     clock_ms += 260;
-    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0);
+    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
 }
 
@@ -186,7 +198,7 @@ static void test_imu_restart(void)
     exercise_imu = true;
     assert(b4_processor_init(&imu, NULL) == B4_CALIBRATION_COLLECTING);
     imu_samples(1000, 110);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(vehicle_request_start());
     work();
     assert(vehicle_state() == VC_FOLLOW_LINE && rearm_count == 1);
@@ -196,18 +208,18 @@ static void test_imu_restart(void)
     motor_stopped();
     work();
     assert(vehicle_state() == VC_IDLE && stop_count > stops && imu.stop_latched);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(!vehicle_request_start() && rearm_count == 1);
     imu_samples(1000, 40);
     assert(imu.stop_latched); /* Setting down alone does not restart. */
     assert(!vehicle_request_start() && imu.stop_latched && rearm_count == 1); /* Stale line. */
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(vehicle_request_start());
     imu_samples(0, 1); /* Hazard after enqueue, before worker acceptance. */
     work();
     assert(vehicle_state() == VC_IDLE && imu.stop_latched && rearm_count == 1);
     imu_samples(1000, 40);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(vehicle_request_start());
     assert(imu.stop_latched); /* Enqueue does not rearm. */
     work();
@@ -221,18 +233,213 @@ static void test_imu_restart(void)
     puts("PASS Buddy 4 blocks unsafe/queued restart and stops again after explicit restart");
 }
 
+static void junction_sample(unsigned left, unsigned right, unsigned decoded, unsigned elapsed)
+{
+    clock_ms += elapsed;
+    vehicle_submit_line(left, 0, right, 12, 12, FALSE, decoded, BARCODE_SCAN_IDLE);
+    work();
+}
+
+static void begin_junction(unsigned decoded)
+{
+    model = (VC_MODEL){.state = VC_FOLLOW_LINE};
+    pending = (__typeof__(pending)){0};
+    drive = (__typeof__(drive)){0};
+    motor_stopped();
+    junction_sample(0, 0, decoded, 10);
+    assert(vehicle_state() == VC_FOLLOW_LINE && queued_command);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    for (unsigned i = 0; i < 2; ++i) {
+        junction_sample(850, 850, 0, 10);
+        assert(vehicle_state() == VC_FOLLOW_LINE);
+    }
+    junction_sample(850, 850, 0, 10);
+    assert(vehicle_state() == VC_TURNING && model.junction.phase == VC_JUNCTION_ADVANCE);
+    assert(!queued_command);
+    motor_stopped();
+    work();
+    junction_sample(850, 850, 0, 240);
+    assert(queued_command >> 4 == S5_IR_TO_AXLE_MM + S5_TAPE_WIDTH_MM / 2u);
+    complete_move();
+    assert(model.junction.phase == VC_JUNCTION_PIVOT);
+    junction_sample(0, 0, 0, 240);
+    assert((queued_command & 15u) == S2_CRAWL_PIVOT);
+}
+
+static void test_barcode_junction(void)
+{
+    vehicle_request_stop();
+    work();
+    motor_stopped();
+    work();
+    BARCODE_MAP map;
+    assert(vehicle_get_barcode_map(&map));
+    assert(map.left == 1 && map.right == 6 && map.straight == 4 && map.uturn == 3);
+    const unsigned char configured[] = {0x1A, 0xA7, 0xAC}; /* Z/X/I/Y */
+    const unsigned char bad_tag[] = {0x1A, 0xA7, 0x0C};
+    const unsigned char duplicate[] = {0x5A, 0xA7, 0xAC}; /* Z/Z/I/Y */
+    assert(!s1_decode_barcode_map(bad_tag, sizeof(bad_tag), &map));
+    assert(!s1_decode_barcode_map(duplicate, sizeof(duplicate), &map));
+    assert(!s1_decode_barcode_map(configured, sizeof(configured) - 1u, &map));
+    assert(s1_decode_barcode_map(configured, sizeof(configured), &map));
+    assert(map.left == 26 && map.right == 24 && map.straight == 9 && map.uturn == 25);
+    assert(vehicle_set_barcode_map(map));
+    unsigned char reported[S1_BARCODE_MAP_BYTES];
+    assert(vehicle_get_barcode_map(&map) && s1_wire_barcode_map(reported, map));
+    for (unsigned i = 0; i < sizeof(reported); ++i) assert(reported[i] == configured[i]);
+
+    model = (VC_MODEL){.state = VC_FOLLOW_LINE};
+    pending = (__typeof__(pending)){0};
+    junction_sample(0, 0, 26, 10);
+    assert(pending.barcode_armed == VC_NAV_LEFT);
+    assert(!vehicle_set_barcode_map((BARCODE_MAP){1, 2, 3, 4}));
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    junction_sample(0, 0, 1, 10);
+    assert(pending.barcode_armed == VC_NAV_LEFT); /* Old default A is unassigned now. */
+    junction_sample(0, 0, 9, 10);
+    assert(pending.barcode_armed == VC_NAV_NONE);
+    for (unsigned i = 0; i < 3; ++i) junction_sample(850, 850, 0, 10);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !queued_command); /* Straight keeps tracking. */
+    vehicle_request_stop();
+    work();
+
+    begin_junction(24);
+    assert(queued_command >> 4 == 2u * (90u + VC_JUNCTION_SEARCH_DEG) + 1u);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    pivot_angle = 50;
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 0, 0, 10);
+    junction_sample(0, 0, 0, 10);
+    assert(!model.junction.dark_samples); /* Ignore tape before the branch window. */
+    pivot_angle = 83;
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 850, 0, 10);
+    junction_sample(0, 0, 0, 10);
+    assert(model.junction.phase == VC_JUNCTION_PIVOT);
+    junction_sample(0, 0, 0, 10);
+    assert(model.junction.phase == VC_JUNCTION_SETTLE && motor_busy && !queued_command);
+    motor_stopped();
+    work();
+    junction_sample(0, 0, 0, 240);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !queued_command);
+    junction_sample(0, 0, 0, 10);
+    assert(queued_command && data.barcode == 24u);
+    vehicle_request_stop();
+    work();
+
+    begin_junction(26);
+    assert(queued_command >> 4 == 2u * (90u + VC_JUNCTION_SEARCH_DEG));
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    pivot_angle = 90u + VC_JUNCTION_SEARCH_DEG;
+    motor_stopped();
+    work();
+    assert(model.junction.phase == VC_JUNCTION_SWEEP);
+    junction_sample(0, 0, 0, 240);
+    assert(queued_command >> 4 == 4u * VC_JUNCTION_SEARCH_DEG + 1u);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    pivot_angle = 2u * VC_JUNCTION_SEARCH_DEG;
+    motor_stopped();
+    work();
+    assert(vehicle_state() == VC_FAULT && model.reason == VC_REASON_BARCODE_LINE &&
+           model.reposition_required && !queued_command);
+
+    begin_junction(25);
+    assert(queued_command >> 4 == 2u * (180u + VC_JUNCTION_SEARCH_DEG) + 1u);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+    vehicle_request_stop();
+    work();
+    assert(vehicle_state() == VC_IDLE && model.reposition_required && !queued_command);
+    motor_stopped();
+    work();
+    puts("PASS configured barcode commands, stopped-only mapping, and bounded tape recovery");
+}
+
+static void barcode_sample(BARCODE_SCAN scan, unsigned elapsed)
+{
+    clock_ms += elapsed;
+    vehicle_submit_line(80, 0, 80, 12, 12, FALSE, 0, scan);
+    work();
+}
+
+static void barcode_approach(uint32_t pulses)
+{
+    tracking_straight = true;
+    straight_since = clock_ms - VC_BARCODE_APPROACH_MS;
+    encoder_travel = (S2_TRAVEL){pulses, pulses};
+    barcode_sample(BARCODE_SCAN_ACTIVE, 10u);
+    assert(queued_command);
+    motor_acknowledge(S2_REPLY_OK);
+    work();
+}
+
+static void test_barcode_retry(void)
+{
+    vehicle_request_stop();
+    work();
+    motor_stopped();
+    work();
+    pending.obstacle_monitor = false;
+    model = (VC_MODEL){.state = VC_FOLLOW_LINE};
+
+    barcode_approach(0u);
+    encoder_travel = (S2_TRAVEL){300u, 300u};
+    barcode_sample(BARCODE_SCAN_MISSED, 100u);
+    assert(vehicle_state() == VC_RETRY_BARCODE && !queued_command);
+    motor_stopped();
+    work();
+    barcode_sample(BARCODE_SCAN_IDLE, 240u);
+    unsigned reverse_arg = S2_MANEUVER_REVERSE_BASE + 109u;
+    assert((queued_command & 15u) == S2_MANEUVER && queued_command >> 4 == reverse_arg);
+    encoder_travel = (S2_TRAVEL){630u, 630u};
+    complete_move();
+    assert(model.barcode_retry.settling && !queued_command);
+    motor_stopped();
+    work();
+    barcode_sample(BARCODE_SCAN_IDLE, 240u);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !queued_command);
+
+    barcode_approach(670u);
+    encoder_travel = (S2_TRAVEL){990u, 990u};
+    barcode_sample(BARCODE_SCAN_MISSED, 100u);
+    assert(vehicle_state() == VC_FOLLOW_LINE && !pending.barcode_retry_mm);
+    if (queued_command) { motor_acknowledge(S2_REPLY_OK); work(); }
+
+    tracking_straight = true;
+    straight_since = clock_ms - VC_BARCODE_APPROACH_MS;
+    barcode_sample(BARCODE_SCAN_ACTIVE, 10u);
+    encoder_travel = (S2_TRAVEL){1290u, 1290u};
+    barcode_sample(BARCODE_SCAN_MISSED, 100u);
+    assert(vehicle_state() == VC_RETRY_BARCODE && !queued_command);
+    motor_stopped();
+    work();
+    barcode_sample(BARCODE_SCAN_IDLE, 240u);
+    assert(queued_command >> 4 == reverse_arg);
+    vehicle_request_stop();
+    work();
+    assert(vehicle_state() == VC_IDLE && !queued_command);
+    puts("PASS one straight barcode retry, no second reverse on the same scan, and STOP priority");
+}
+
 int main(void)
 {
     uint32_t request;
     VEHICLE_SNAPSHOT snapshot;
     assert(vehicle_init() == E_OK);
     vehicle_enable_obstacle_monitor();
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(work() == TMO_FEVR);
-    assert(vehicle_get_snapshot(&snapshot) && snapshot.obstacle_no_echo && snapshot.start_block == VC_START_READY);
+    assert(vehicle_get_snapshot(&snapshot) && !snapshot.obstacle_no_echo &&
+           snapshot.obstacle_forward_mm == S5_UNKNOWN_RANGE && snapshot.start_block == VC_START_READY);
 
     vehicle_submit_obstacle_range(S5_OPEN_RANGE);
-    assert(vehicle_get_snapshot(&snapshot) && snapshot.obstacle_no_echo); /* A single open ping is insufficient. */
+    assert(vehicle_get_snapshot(&snapshot) && snapshot.obstacle_forward_mm == S5_UNKNOWN_RANGE);
     assert(vehicle_request_start());
     vehicle_request_stop();
     assert(work() == TMO_FEVR && stop_count == 1 && !command_count);
@@ -241,45 +448,42 @@ int main(void)
     work();
     assert(vehicle_request_start());
     vehicle_submit_obstacle_range(S5_UNKNOWN_RANGE);
-    assert(work() > 0 && vehicle_state() == VC_AVOIDING && !command_count);
-    unsigned scan_limit;
-    assert(scan_count == 1 && vehicle_obstacle_scan_request(&request, &scan_limit));
-    assert(scan_limit == S5_FOLLOW_CLEAR_MM);
-    clock_ms += 20;
-    vehicle_finish_obstacle_scan(NULL, request);
-    assert(work() > 0 && scan_count == 2 && vehicle_obstacle_scan_request(&request, NULL));
-    clock_ms += 20;
-    vehicle_finish_obstacle_scan(NULL, request);
-    assert(work() > 0 && !command_count && vehicle_state() == VC_AVOIDING);
-    assert(vehicle_get_snapshot(&snapshot) && snapshot.avoidance_phase == S5_WAIT_PATH &&
-           snapshot.obstacle_no_echo && snapshot.start_block == VC_START_READY);
-
-    vehicle_submit_obstacle_range(S5_OPEN_RANGE);
-    assert(!event_flags && !command_count);
-    vehicle_submit_obstacle_range(S5_OPEN_RANGE);
-    assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE && !command_count);
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
-    assert(work() > 0 && command_count == 1);
-    vehicle_submit_line(0, 0, 0, 24, 24, FALSE, 0);
+    assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE && command_count == 1);
+    assert(!scan_count && !vehicle_obstacle_scan_request(&request, NULL));
+    assert(vehicle_get_snapshot(&snapshot) && !snapshot.obstacle_no_echo && !snapshot.obstacle_blocked);
+    vehicle_submit_line(0, 0, 0, 24, 24, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(command_count == 1);
     motor_acknowledge(S2_REPLY_SETTLING);
     work();
     assert(command_count == 1); /* Wait before retrying a settling rejection. */
     clock_ms += VC_REFRESH_MS;
-    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0);
+    vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(command_count == 2);
     motor_acknowledge(S2_REPLY_OK);
     work();
 
+    for (unsigned i = 0; i < 3; ++i) {
+        clock_ms += 30;
+        vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
+        vehicle_submit_line(0, 0, 0, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
+        assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE);
+        assert(stop_count == 1 && scan_count == 0);
+        assert(vehicle_get_snapshot(&snapshot) && snapshot.line_valid &&
+               snapshot.timestamp_ms == snapshot.line_timestamp_ms &&
+               snapshot.obstacle_forward_mm == S5_UNKNOWN_RANGE && !snapshot.obstacle_no_echo);
+    }
+
     vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     work();
-    assert(vehicle_state() == VC_AVOIDING && stop_count == 2 && scan_count == 2);
+    assert(vehicle_state() == VC_AVOIDING && stop_count == 2 && scan_count == 0);
     assert(!vehicle_obstacle_scan_request(&request, NULL));
     motor_stopped();
     work();
-    assert(scan_count == 3 && vehicle_obstacle_scan_request(&request, NULL));
+    unsigned scan_limit;
+    assert(scan_count == 1 && vehicle_obstacle_scan_request(&request, &scan_limit));
+    assert(scan_limit == S5_FOLLOW_CLEAR_MM);
     assert(vehicle_obstacle_scan_current(request));
 
     connection = 0;
@@ -322,13 +526,13 @@ int main(void)
     assert(work() == TMO_FEVR && !pending.reset && motor_busy);
     motor_stopped();
     work();
-    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0);
+    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     vehicle_submit_obstacle_range(606);
     assert(vehicle_request_start());
     work();
     motor_acknowledge(S2_REPLY_OK);
     work();
-    vehicle_submit_obstacle_range(208);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     work();
     motor_stopped();
     work();
@@ -339,6 +543,8 @@ int main(void)
                              .left_path_mm = 80, .right_path_mm = S5_UNKNOWN_RANGE};
     uint32_t first_request = request;
     clock_ms += 20;
+    /* The target moved slightly farther away after the stop. */
+    vehicle_submit_obstacle_range(208);
     vehicle_finish_obstacle_scan(&unresolved, request);
     assert(work() > 0 && vehicle_obstacle_scan_request(&request, NULL) && request != first_request);
     clock_ms += 20;
@@ -361,14 +567,14 @@ int main(void)
     assert(vehicle_get_snapshot(&snapshot) && !snapshot.obstacle_profile &&
            snapshot.avoidance_failure == S5_FAIL_NONE && !snapshot.reset_pending);
     /* START with a close obstacle requests avoidance directly from standstill. */
-    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0);
-    vehicle_submit_obstacle_range(208);
+    vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     unsigned before_start = command_count;
     assert(vehicle_request_start());
     assert(work() > 0 && vehicle_state() == VC_AVOIDING && command_count == before_start);
     assert(vehicle_obstacle_scan_request(&request, NULL));
     S5_PROFILE saved = {
-        .nearest_mm = 196, .front_mm = 196, .width_mm = 294, .angle_offset_deg = 60,
+        .nearest_mm = 136, .front_mm = 136, .width_mm = 294, .angle_offset_deg = 60,
         .left_path_mm = 208, .right_path_mm = 651, .left_edge_mm = -254, .right_edge_mm = 40,
         .left_edge_valid = true, .right_edge_valid = true,
     };
@@ -380,22 +586,25 @@ int main(void)
     assert(vehicle_obstacle_ranging_paused() && !queued_command);
     assert(vehicle_get_snapshot(&snapshot) && snapshot.obstacle_profile && !snapshot.obstacle_no_echo);
 
+    const unsigned pivot_left = S2_CRAWL_PIVOT | (S5_PIVOT_DEG << 5);
+    const unsigned pivot_right = pivot_left | (1u << 4);
     settle_step();
-    assert(queued_command == (S2_ARC | (1u << 4)));
+    assert(queued_command == pivot_right);
     motor_acknowledge(S2_REPLY_OK);
     work();
     /* A late in-flight ping is dropped even if it would indicate an obstacle. */
     vehicle_submit_obstacle_range(60);
     vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
     assert(!event_flags && !range_valid(clock_ms));
+    pivot_angle = S5_PIVOT_DEG;
     motor_stopped();
     work();
 
     settle_step();
-    assert(model.avoidance.phase == S5_SHIFT_OUT && (queued_command >> 4) == 102);
+    assert(model.avoidance.phase == S5_SHIFT_OUT && (queued_command >> 4) == 185);
     complete_move();
     settle_step();
-    assert(queued_command == S2_ARC);
+    assert(queued_command == pivot_left);
     motor_acknowledge(S2_REPLY_OK);
     work();
     unsigned before_ir_gap = stop_count;
@@ -403,71 +612,76 @@ int main(void)
     vehicle_notify_feedback();
     assert(work() == VC_REFRESH_MS && model.avoidance.phase == S5_ALIGN_OUTSIDE &&
            stop_count == before_ir_gap && motor_busy);
+    pivot_angle = S5_PIVOT_DEG;
     motor_stopped();
     work();
 
     settle_step();
-    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 196 + 177 + 160 - 225);
+    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 136 + 147 + 160);
     complete_move();
     settle_step();
-    assert(model.avoidance.phase == S5_TURN_IN && queued_command == S2_ARC);
+    assert(model.avoidance.phase == S5_TURN_IN && queued_command == pivot_left);
     complete_move();
 
     settle_step();
-    assert(model.avoidance.phase == S5_FIND_LINE && (queued_command >> 4) == 200 + S5_SEARCH_EXTENSION_MM);
+    assert(model.avoidance.phase == S5_FIND_LINE &&
+           (queued_command >> 4) == 185 + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM);
     motor_acknowledge(S2_REPLY_OK);
     work();
     near_tape = true;
-    search_progress = 10;
+    search_progress = 38;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
-        vehicle_submit_line(200, 0, 26, 30, 30, FALSE, 0);
+        vehicle_submit_line(200, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
         work();
     }
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy);
 
-    search_progress = 28;
+    search_progress = 54;
     unsigned stops_before_rejoin = stop_count;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
-        vehicle_submit_line(108, 0, 200, 30, 30, FALSE, 0);
+        vehicle_submit_line(108, 0, 200, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
         work();
     }
-    assert(model.avoidance.align_at_mm == 102);
+    assert(model.avoidance.align_at_mm == 185);
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy && stop_count == stops_before_rejoin);
-    search_progress = 101;
+    search_progress = 184;
     vehicle_notify_feedback();
     work();
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy && stop_count == stops_before_rejoin);
 
-    search_progress = 102;
+    search_progress = 185;
     vehicle_notify_feedback();
     work();
     assert(model.avoidance.phase == S5_CENTER_LINE && !queued_command && stop_count == stops_before_rejoin + 1);
-    search_progress = 103;
+    search_progress = 186;
     motor_stopped();
     work();
     settle_step();
     assert(model.avoidance.phase == S5_ALIGN_LINE && !queued_command);
     settle_step();
-    assert(queued_command == (S2_ARC | (1u << 4)));
+    assert(queued_command == pivot_right);
     complete_move();
     assert(model.avoidance.phase == S5_CHECK_LINE && vehicle_obstacle_ranging_paused());
 
     unsigned wakes_before = ranging_wakes;
     clock_ms += 260;
-    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0);
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     clock_ms += 10;
-    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0);
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(model.avoidance.phase == S5_COMPLETE && !vehicle_obstacle_ranging_paused());
     assert(ranging_wakes == wakes_before + 1 && scan_count == scans_before);
     assert(!vehicle_obstacle_scan_request(&request, NULL) && !queued_command);
-    settle_step();
-    assert(model.avoidance.phase == S5_COMPLETE && !queued_command);
-    vehicle_submit_obstacle_range(600);
+    clock_ms += 10;
+    vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     assert(work() > 0 && vehicle_state() == VC_FOLLOW_LINE && queued_command);
+    assert(vehicle_get_snapshot(&snapshot) && snapshot.line_valid &&
+           snapshot.timestamp_ms == snapshot.line_timestamp_ms &&
+           snapshot.obstacle_forward_mm == S5_UNKNOWN_RANGE && !snapshot.obstacle_no_echo);
 
     /* STOP while off the tape must also wake forward ranging. */
     vehicle_request_stop();
@@ -486,15 +700,15 @@ int main(void)
     assert(vehicle_state() == VC_IDLE && model.avoidance.failure == S5_FAIL_STOP);
 
     vehicle_submit_obstacle_range(500);
-    assert(!obstacle_blocked(clock_ms));
-    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM + 1);
-    assert(!obstacle_blocked(clock_ms) && obstacle_range.blocked);
-    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
-    assert(obstacle_blocked(clock_ms));
+    assert(!obstacle_blocked());
+    vehicle_submit_obstacle_range(181);
+    assert(!obstacle_blocked() && obstacle_range.blocked);
+    vehicle_submit_obstacle_range(180);
+    assert(obstacle_blocked());
     vehicle_submit_obstacle_range(S5_FOLLOW_CLEAR_MM);
-    assert(obstacle_blocked(clock_ms));
+    assert(obstacle_blocked());
     vehicle_submit_obstacle_range(S5_FOLLOW_CLEAR_MM + 1);
-    assert(!obstacle_blocked(clock_ms));
+    assert(!obstacle_blocked());
 
     vehicle_submit_obstacle_range(S5_OPEN_RANGE);
     vehicle_submit_obstacle_range(S5_OPEN_RANGE);
@@ -513,7 +727,7 @@ int main(void)
            snapshot.avoidance_failure == S5_FAIL_NONE && !snapshot.obstacle_no_echo &&
            snapshot.start_block == VC_START_OBSTACLE && !queued_command);
     assert(!vehicle_request_start());
-    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0);
+    vehicle_submit_line(23, 850, 33, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
     work();
     assert(vehicle_state() == VC_IDLE && !queued_command);
     assert(vehicle_request_start());
@@ -525,11 +739,53 @@ int main(void)
     motor_stopped();
     work();
     model = (VC_MODEL){.state = VC_AVOIDING, .avoidance = {
-        .phase = S5_WAIT_PATH, .phase_at = clock_ms, .scan_retried = true, .blocked_range_mm = 200,
+        .phase = S5_WAIT_PATH, .phase_at = clock_ms, .scan_retried = true, .blocked_range_mm = S5_FOLLOW_STOP_MM,
     }};
-    vehicle_submit_obstacle_range(200);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     work();
     scans_before = scan_count;
+    vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
+    work();
+    assert(obstacle_blocked() && !range_valid(clock_ms));
+    assert(vehicle_get_snapshot(&snapshot) && snapshot.obstacle_no_echo && snapshot.line_valid);
     assert(vehicle_request_start());
     work();
-    assert(model.avoidance.phase == S5_PROFILE_PATH && scan_count == scans_before + 
+    assert(model.avoidance.phase == S5_WAIT_PATH && scan_count == scans_before && !queued_command);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
+    work();
+    assert(vehicle_request_start());
+    work();
+    assert(model.avoidance.phase == S5_PROFILE_PATH && scan_count == scans_before + 1 &&
+           !queued_command);
+
+    /* A fallback pivot wakes centred ranging only after the turn completes. */
+    assert(vehicle_obstacle_scan_request(&request, NULL));
+    S5_PROFILE fallback = saved;
+    fallback.left_edge_mm = -50;
+    fallback.left_mm = fallback.left_path_mm = S5_UNKNOWN_RANGE;
+    fallback.right_path_mm = 100;
+    clock_ms += 20;
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
+    vehicle_finish_obstacle_scan(&fallback, request);
+    work();
+    assert(model.avoidance.phase == S5_TURN_OUT && vehicle_obstacle_ranging_paused());
+    settle_step();
+    assert(queued_command == pivot_left);
+    wakes_before = ranging_wakes;
+    complete_move();
+    assert(model.avoidance.phase == S5_SHIFT_OUT && !vehicle_obstacle_ranging_paused() &&
+           ranging_wakes == wakes_before + 1);
+    vehicle_submit_obstacle_range(600);
+    work();
+    settle_step();
+    assert(!queued_command);
+    vehicle_submit_obstacle_range(600);
+    work();
+    assert((queued_command >> 4) == 195 && vehicle_obstacle_ranging_paused());
+    assert(!range_valid(clock_ms)); /* The left-facing reading cannot leak into the next heading. */
+
+    puts("PASS missing echo does not start a scan, close echo stops before scanning, and bypass preserves STOP");
+    test_barcode_junction();
+    test_imu_restart();
+    test_barcode_retry();
+}

@@ -5,6 +5,8 @@
 #include <stdint.h>
 /* Public compact status: flags9 + rpm9*2 + pwm7*2 + progress13*2 = 67 bits. */
 typedef struct { uint8_t bytes[9]; } S2_STATUS;
+/* Local accumulated encoder pulses, independent of the packed move status. */
+typedef struct { uint32_t left, right; } S2_TRAVEL;
 static inline unsigned s2_get_bits(const S2_STATUS *s,unsigned pos,unsigned n)
 {
     unsigned v=0;
@@ -40,6 +42,7 @@ bool motion_set_wheel_rpm_tracked(unsigned left,unsigned right,uint16_t *command
 bool motion_maneuver(unsigned distance_mm,bool right,uint16_t *command);
 bool motion_maneuver_reverse(unsigned distance_mm,uint16_t *command);
 bool motion_arc(bool right,uint16_t *command);
+bool motion_crawl_pivot(unsigned degrees,bool right,uint16_t *command);
 bool motion_move_forward_mm(unsigned mm); /* 1..2000; 0 no-op */
 bool motion_move_backward_mm(unsigned mm);
 bool motion_turn_left(unsigned steps); /* 1..8 = 45..360 degrees */
@@ -58,4 +61,5 @@ enum { S2_REPLY_NONE,S2_REPLY_OK,S2_REPLY_STALE,S2_REPLY_SETTLING,
 typedef struct { uint32_t sequence,age_ms;uint16_t command;uint8_t reason;bool accepted; } S2_REPLY;
 bool motion_get_reply(S2_REPLY *out);
 bool motion_get_feedback(S2_STATUS *status,S2_REPLY *result,bool *busy);
+bool motion_get_travel(S2_TRAVEL *travel);
 #endif

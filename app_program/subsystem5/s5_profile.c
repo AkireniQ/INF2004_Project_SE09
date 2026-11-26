@@ -5,7 +5,7 @@
 #define MIN_DISTANT_ECHOES 3u
 #define WIDTH_COS_SCALE 65536u
 
-_Static_assert(S5_FOLLOW_CLEAR_MM <= S5_MAX_PROJECTED_FRONT_MM, "Front projection must cover the obstacle window");
+_Static_assert(S5_FOLLOW_CLEAR_MM <= S5_MAX_FRONT_MM, "Front range must cover the obstacle window");
 
 /* sin and cos for 0..75 degrees in steps of 5 degrees, scaled by 1024. */
 static const unsigned short sine[] = {
@@ -120,6 +120,26 @@ unsigned s5_edge_background(const unsigned *ranges, unsigned count, unsigned ref
     return repeated || distant_echoes >= MIN_DISTANT_ECHOES ? shortest : S5_UNKNOWN_RANGE;
 }
 
+unsigned s5_clearance_range(const unsigned *ranges, unsigned count)
+{
+    unsigned nearest = S5_UNKNOWN_RANGE;
+    unsigned measured = 0;
+    unsigned open = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned range = ranges[i];
+        if (s5_range_measured(range)) {
+            ++measured;
+            if (range < nearest) nearest = range;
+        } else if (range == S5_OPEN_RANGE) {
+            ++open;
+        }
+    }
+    /* A corridor can return echoes from different surfaces. Use the nearest
+       measured distance when two usable returns support the observation. */
+    if (measured + open < 2u) return S5_UNKNOWN_RANGE;
+    return measured ? nearest : S5_OPEN_RANGE;
+}
+
 typedef struct {
     unsigned last_hit, boundary, clearance;
 } S5_EDGE;
@@ -178,11 +198,11 @@ S5_PROFILE s5_profile(const S5_SCAN *scan, unsigned first, unsigned last, unsign
         if (bearing >= S5_MIN_ANGLE && bearing <= S5_MAX_ANGLE && range < s5_scan_get(scan, near))
             near = i;
         int lateral = lateral_mm(i, range);
-        /* Off-path reflections at wide angles do not shorten the gap directly ahead. */
-        if (lateral >= -(int)S5_TURN_CLEARANCE_MM && lateral <= (int)S5_TURN_CLEARANCE_MM) {
-            unsigned forward = project_forward_mm(i, range);
-            if (forward < front) front = forward;
-        }
+        /* The beam can still see the same front face when aimed off-axis.
+           Use the measured range for pivot clearance since the reflection's bearing is uncertain. */
+        if (lateral >= -(int)S5_TURN_CLEARANCE_MM &&
+            lateral <= (int)S5_TURN_CLEARANCE_MM && range < front)
+            front = range;
         if (lateral < left_hit) left_hit = lateral;
         if (lateral > right_hit) right_hit = lateral;
     }
@@ -191,7 +211,7 @@ S5_PROFILE s5_profile(const S5_SCAN *scan, unsigned first, unsigned last, unsign
     S5_PROFILE result = {
         .nearest_mm = s5_scan_get(scan, near),
         .angle_offset_deg = S5_MAX_ANGLE - s5_scan_bearing(near),
-        .front_mm = front < S5_MAX_PROJECTED_FRONT_MM ? front : S5_MAX_PROJECTED_FRONT_MM,
+        .front_mm = front < S5_MAX_FRONT_MM ? front : S5_MAX_FRONT_MM,
         .width_mm = span > 0 && span <= MAX_WIDTH_MM ? (span + 1u) / 2u : S5_UNKNOWN_WIDTH,
         .left_edge_mm = left_hit,
         .right_edge_mm = right_hit,
@@ -199,6 +219,8 @@ S5_PROFILE s5_profile(const S5_SCAN *scan, unsigned first, unsigned last, unsign
         .right_mm = right.clearance,
         .left_path_mm = S5_UNKNOWN_RANGE,
         .right_path_mm = S5_UNKNOWN_RANGE,
+        .left_outward_mm = S5_UNKNOWN_RANGE,
+        .right_outward_mm = S5_UNKNOWN_RANGE,
         .left_clipped = left.last_hit == 0,
         .right_clipped = right.last_hit == S5_SCAN_POINTS - 1,
     };

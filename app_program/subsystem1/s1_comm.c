@@ -28,18 +28,17 @@ ER s1_publish_line(unsigned ir_bits, unsigned barcode)
     return publish(MQTT_ROUTE_LINE, data, sizeof(data));
 }
 
-ER s1_publish_terrain(unsigned height_mm, unsigned phase)
+ER s1_publish_terrain(unsigned height_mm)
 {
-    unsigned char data[2];
-    if (!s1_wire_terrain(data, height_mm, phase)) { return E_PAR; }
+    unsigned char data[S1_TERRAIN_BYTES];
+    if (!s1_wire_terrain(data, height_mm)) { return E_PAR; }
     return publish(MQTT_ROUTE_TERRAIN, data, sizeof(data));
 }
 
-ER s1_publish_obstacle(unsigned nearest_mm, unsigned width_mm,
-                       unsigned left_mm, unsigned right_mm)
+ER s1_publish_obstacle(S1_OBSTACLE_STATUS status, unsigned width_mm)
 {
-    unsigned char data[6];
-    if (!s1_wire_obstacle(data, nearest_mm, width_mm, left_mm, right_mm)) { return E_PAR; }
+    unsigned char data[S1_OBSTACLE_BYTES];
+    if (!s1_wire_obstacle(data, status, width_mm)) { return E_PAR; }
     return publish(MQTT_ROUTE_OBSTACLE, data, sizeof(data));
 }
 
@@ -57,7 +56,7 @@ void s1_comm_task(INT stacd, void *exinf)
     (void)stacd; (void)exinf;
 #if TM_MQTT
     unsigned char frame[MQTT_BRIDGE_FRAME_MAX];
-    uint32_t telemetry_at=0;
+    uint32_t telemetry_at=0, barcode_map_at=0;
     for (;;) {
         unsigned budget;
         unsigned char stop_seen = 0;
@@ -68,6 +67,12 @@ void s1_comm_task(INT stacd, void *exinf)
             int length = mqtt_bridge_receive(frame);
             if (length < 0) { break; }
             if (length < 2 || frame[0] != MQTT_ROUTE_COMMAND) { continue; }
+            if (length == 1 + S1_BARCODE_MAP_BYTES) {
+                BARCODE_MAP map;
+                if (s1_decode_barcode_map(frame + 1, S1_BARCODE_MAP_BYTES, &map))
+                    (void)vehicle_set_barcode_map(map);
+                continue;
+            }
             if (!s1_command_decode(frame + 1, (unsigned)length - 1u, &op)) {
                 ack = (unsigned char)((frame[1] & 1u) | 2u);
             } else if (op == S1_CMD_STOP) {
@@ -87,6 +92,14 @@ void s1_comm_task(INT stacd, void *exinf)
         if((uint32_t)(time.lo-telemetry_at)>=200u){
             telemetry_at=time.lo;
             s1_publish_telemetry();
+        }
+        if ((s1_connection_status() & 3u) == 3u &&
+            (uint32_t)(time.lo - barcode_map_at) >= 1000u) {
+            unsigned char payload[S1_BARCODE_MAP_BYTES];
+            BARCODE_MAP map;
+            barcode_map_at = time.lo;
+            if (vehicle_get_barcode_map(&map) && s1_wire_barcode_map(payload, map))
+                (void)publish(MQTT_ROUTE_BARCODE_MAP, payload, sizeof(payload));
         }
         (void)tk_dly_tsk(50);
     }

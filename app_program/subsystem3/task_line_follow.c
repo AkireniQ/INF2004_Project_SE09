@@ -1,10 +1,11 @@
 /*
  * task_line_follow.c: line following (Buddy 3).
- * line_sense()  reads the 3 sensors -> darkness 0..1000
+ * line_sense() reads the two tracking sensors and raw barcode ADC
  * line_decide() PURE logic: darkness in, wheel RPM out (easy to unit-test)
  * line_follow_task() runs both every LINE_PERIOD_MS and drives Motion Control
  */
 #include "subsystem3.h"
+#include "barcode.h"
 #include "../vehicle_controller/vehicle_controller.h"
 
 enum { S3_WAIT_TICK, S3_READ_ADC, S3_UPDATE_STEERING, S3_SUBMIT_LINE };
@@ -43,15 +44,14 @@ LOCAL INT darkness(INT raw, INT white, INT black)
 
 
 /* Only the outer sensors are required for steering and START. */
-EXPORT ER line_sense(INT *left, INT *center, INT *right)
+LOCAL ER line_sense(INT *left, INT *barcode_raw, INT *right)
 {
     INT left_raw = ir_read(0);
     INT right_raw = ir_read(2);
     if (left_raw < 0 || right_raw < 0) { return E_IO; }
     *left = darkness(left_raw, white_raw[0], black_raw[0]);
     *right = darkness(right_raw, white_raw[2], black_raw[2]);
-    INT barcode_raw = ir_read(1);
-    *center = barcode_raw < 0 ? -1 : darkness(barcode_raw, white_raw[1], black_raw[1]);
+    *barcode_raw = ir_read(1);
     return E_OK;
 }
 
@@ -62,18 +62,10 @@ LOCAL void tick_release(void *exinf)
     (void)tk_wup_tsk(task);
 }
 
-/* Preserve the team's existing v2 telemetry encoding for A through D. */
-LOCAL unsigned barcode_id(char letter)
-{
-    return letter >= 'A' && letter <= 'D' ? (unsigned)(letter - 'A' + 1) : 0u;
-}
-
 EXPORT void line_follow_task(INT stacd, void *exinf)
 {
     LF_STATE steering = {0};
     SYSTIM time;
-    UW previous_tick = 0;
-    unsigned last_barcode = 0;
     BOOL was_following = FALSE;
     BOOL reported_missed_tick = FALSE;
     T_CCYC cyc = {0};
@@ -104,38 +96,39 @@ EXPORT void line_follow_task(INT stacd, void *exinf)
             continue;
         }
         (void)tk_can_wup(task);
-        (void)tk_get_otm(&time);
-        INT left, center, right;
+        INT left, barcode_raw, right;
         __atomic_store_n(&sampler_stage, S3_READ_ADC, __ATOMIC_RELAXED);
-        if (line_sense(&left, &center, &right) < E_OK) {
+        ER sample = line_sense(&left, &barcode_raw, &right);
+        if (sample == E_IO) {
+            /* Retry the whole sample once so both tracking readings are fresh.
+               The controller still times out the previous sample independently. */
+            sample = line_sense(&left, &barcode_raw, &right);
+        }
+        if (sample < E_OK) {
             vehicle_invalidate_line();
             steering = (LF_STATE){0};
             barcode_reset();
             continue;
         }
+        (void)tk_get_otm(&time);
 
         __atomic_store_n(&sampler_stage, S3_UPDATE_STEERING, __ATOMIC_RELAXED);
         BOOL following = vehicle_is_following();
-        if (!following || !was_following) {
-            last_barcode = 0;
-            steering = (LF_STATE){0};
-        }
-        if (!following || !was_following || center < 0 ||
-            time.lo - previous_tick > 2u * LINE_PERIOD_MS) {
-            barcode_reset();
-        }
-        if (following && center >= 0) {
-            barcode_feed(center);
-            char letter = barcode_take();
-            if (letter != 0) { last_barcode = barcode_id(letter); }
-        }
-        previous_tick = time.lo;
+        if (!following || !was_following) steering = (LF_STATE){0};
+        if (!following || !was_following) barcode_reset();
+        char letter = following ? barcode_feed(barcode_raw, time.lo) : 0;
         was_following = following;
 
+        /* Apply the longer curve confirmation once there is a bar/space pattern. */
+        BARCODE_PROGRESS barcode = barcode_progress();
+        steering.reading_barcode = barcode.elements >= 3u;
+        INT center = barcode_raw < 0 ? 0 : darkness(barcode_raw, white_raw[1], black_raw[1]);
         LF_CMD command;
         line_decide(left, center, right, &steering, &command);
         __atomic_store_n(&sampler_stage, S3_SUBMIT_LINE, __ATOMIC_RELAXED);
-        vehicle_submit_line(left, center < 0 ? 0 : center, right,
-                            command.left, command.right, command.stop, last_barcode);
+        vehicle_submit_line(left, center, right,
+                            command.left, command.right, command.stop,
+                            letter ? (unsigned)(letter - 'A' + 1) : 0u, barcode.scan);
+        s3_record_barcode_sample(following, barcode_raw, time.lo, letter);
     }
 }

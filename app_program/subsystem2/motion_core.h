@@ -22,6 +22,8 @@ bool s2_core_maneuver(unsigned arg);
 bool s2_core_maneuver_finished(unsigned arg,const S2_STATUS *status);
 bool s2_core_arc(bool right);
 bool s2_core_arc_finished(bool right,const S2_STATUS *status);
+bool s2_core_crawl_pivot(unsigned degrees, bool right);
+bool s2_core_pivot_reached(unsigned degrees, const S2_STATUS *status);
 bool s2_core_distance_reached(unsigned mm,const S2_STATUS *status);
 unsigned s2_core_distance_travelled_mm(const S2_STATUS *status);
 void s2_core_stop(void);
@@ -29,6 +31,7 @@ bool s2_core_busy(void);
 unsigned s2_core_faults(void);
 bool s2_core_clear_faults(void); /* Only after checking the cause. Never auto-resumes. */
 void s2_core_snapshot(S2_STATUS *out);
+S2_TRAVEL s2_core_travel(void); /* Motion owner only. */
 void s2_core_timeout(void);
 uint32_t s2_core_timing_fault_gap_us(void); /* Latched diagnostic, does not drive motors. */
 #endif
