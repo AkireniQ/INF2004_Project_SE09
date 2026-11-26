@@ -617,7 +617,7 @@ int main(void)
     work();
 
     settle_step();
-    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 136 + 147 + 160);
+    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 136 + 147 + 160 + 10);
     complete_move();
     settle_step();
     assert(model.avoidance.phase == S5_TURN_IN && queued_command == pivot_left);
@@ -701,9 +701,9 @@ int main(void)
 
     vehicle_submit_obstacle_range(500);
     assert(!obstacle_blocked());
-    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM + 1);
+    vehicle_submit_obstacle_range(181);
     assert(!obstacle_blocked() && obstacle_range.blocked);
-    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
+    vehicle_submit_obstacle_range(180);
     assert(obstacle_blocked());
     vehicle_submit_obstacle_range(S5_FOLLOW_CLEAR_MM);
     assert(obstacle_blocked());

@@ -3,6 +3,7 @@
 #include "../subsystem3/line_steering.h"
 
 #define FRONT_MARGIN_MM 15u
+#define S5_PASS_EXTRA_MM 10u
 #define MAX_LATERAL_OFFSET_MM 400u
 #define MOTION_SETTLE_MS 260u
 #define LEFT_CHECK_TIMEOUT_MS 1500u
@@ -111,7 +112,11 @@ unsigned s5_planned_pass_mm(const S5_PROFILE *profile, unsigned forward_mm)
     }
     unsigned gap = profile->nearest_mm;
     if (s5_range_measured(forward_mm) && forward_mm > gap) gap = forward_mm;
-    return gap + depth + S5_PASS_BODY_ALLOWANCE_MM;
+    unsigned pass = gap + depth + S5_PASS_BODY_ALLOWANCE_MM;
+    if (pass >= S5_MAX_PASS_MM) return pass;
+    /* Use the spare travel budget for extra room before the return pivot. */
+    unsigned spare = S5_MAX_PASS_MM - pass;
+    return pass + (spare < S5_PASS_EXTRA_MM ? spare : S5_PASS_EXTRA_MM);
 }
 
 static unsigned bypass_offset(int lateral_extent, bool edge_valid)

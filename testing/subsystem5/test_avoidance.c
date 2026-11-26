@@ -672,8 +672,8 @@ static void test_lateral_bypass_at_start(void)
     end_move(&clear, &roomy, &out);
     start_move(&clear, &roomy, &out, S5_PIVOT_LEFT, 0);
     end_move(&clear, &roomy, &out);
-    assert(clear.avoidance.pass_mm == 445);
-    start_move(&clear, &roomy, &out, S5_ADVANCE, 445);
+    assert(clear.avoidance.pass_mm == 475);
+    start_move(&clear, &roomy, &out, S5_ADVANCE, 475);
     end_move(&clear, &roomy, &out);
     assert(clear.avoidance.phase == S5_TURN_IN);
 
@@ -892,8 +892,8 @@ static void test_square_bypass(bool left)
     end_move(&model, &in, &out);
     start_move(&model, &in, &out, inward, 0);
     end_move(&model, &in, &out);
-    assert(model.avoidance.offset_mm == plan.offset_mm && model.avoidance.pass_mm == 410);
-    start_move(&model, &in, &out, S5_ADVANCE, 410);
+    assert(model.avoidance.offset_mm == plan.offset_mm && model.avoidance.pass_mm == 440);
+    start_move(&model, &in, &out, S5_ADVANCE, 440);
     assert(model.avoidance.phase == S5_PASS);
     end_move(&model, &in, &out);
     assert(model.avoidance.phase == S5_TURN_IN);
@@ -974,14 +974,20 @@ static void test_plan_pass_distance(void)
     S5_PROFILE scan = obstacle(false);
     scan.nearest_mm = 220;
     scan.width_mm = 200;
-    assert(s5_planned_pass_mm(&scan, 230) == 490);
-    assert(s5_planned_pass_mm(&scan, 190) == 480);
+    assert(s5_planned_pass_mm(&scan, 230) == 500);
+    assert(s5_planned_pass_mm(&scan, 190) == 490);
     scan.width_status = S5_WIDTH_RIGHT_EDGE;
-    assert(s5_planned_pass_mm(&scan, 230) == 515);
+    assert(s5_planned_pass_mm(&scan, 230) == 525);
     scan.width_mm = 280;
-    assert(s5_planned_pass_mm(&scan, 230) == 555);
+    assert(s5_planned_pass_mm(&scan, 230) == 565);
     scan.width_mm = S5_UNKNOWN_WIDTH;
-    assert(s5_planned_pass_mm(&scan, 230) == 510);
+    assert(s5_planned_pass_mm(&scan, 230) == 520);
+
+    scan.width_status = S5_WIDTH_OK;
+    scan.width_mm = 670;
+    assert(s5_planned_pass_mm(&scan, 220) == S5_MAX_PASS_MM);
+    scan.width_mm = 682;
+    assert(s5_planned_pass_mm(&scan, 220) == S5_MAX_PASS_MM + 1u);
 
     VC_MODEL model = {0};
     VC_INPUT in = track_input();
@@ -1010,7 +1016,7 @@ static void test_compact_bypass(void)
     end_move(&model, &in, &out);
     start_move(&model, &in, &out, S5_PIVOT_LEFT, 0);
     end_move(&model, &in, &out);
-    start_move(&model, &in, &out, S5_ADVANCE, 365);
+    start_move(&model, &in, &out, S5_ADVANCE, 395);
     end_move(&model, &in, &out);
     assert(model.avoidance.phase == S5_TURN_IN);
     start_move(&model, &in, &out, S5_PIVOT_LEFT, 0);
