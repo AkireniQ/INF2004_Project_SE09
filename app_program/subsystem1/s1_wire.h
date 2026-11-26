@@ -12,6 +12,9 @@
 #define S1_FAULT_WIFI 16u
 #define S1_WIDTH_UNAVAILABLE 2047u
 #define S1_TERRAIN_BYTES 2u
+/* Two-byte session-maximum frame; distinct from legacy completed heights. */
+#define S1_TERRAIN_MAX_MARKER 6u
+#define S1_TERRAIN_UNAVAILABLE 2047u
 #define S1_OBSTACLE_BYTES 2u
 
 typedef enum {

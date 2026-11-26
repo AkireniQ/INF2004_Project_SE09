@@ -262,7 +262,7 @@ function drawTelemetry(data) {
   text("speed-level", motion?.speed_level);
   text("barcode", line?.barcode);
   el("barcode").classList.toggle("decoded", Boolean(line?.barcode_code));
-  text("terrain-height", terrain?.height_mm);
+  text("terrain-height", terrain?.max_height_mm);
   const obstacle = topics.obstacle?.fresh ? topics.obstacle.data : null;
   let detected = obstacle?.detected ?? null;
   if (topics.obstacle?.data?.detected === undefined) {

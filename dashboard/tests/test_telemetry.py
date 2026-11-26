@@ -20,6 +20,35 @@ class TelemetryTests(unittest.TestCase):
         self.d.broker_connected=self.d.monitor_ready=True
     def send(self,kind,data,retained=False):
         self.d.on_message(None,None,SimpleNamespace(topic=self.d.root+'/'+kind,payload=data,retain=retained))
+    def test_session_maximum_and_reset(self):
+        def maximum(value):
+            self.send('terrain', (value | (6 << 11)).to_bytes(2, 'little'))
+            return self.d.snapshot()['telemetry']['terrain']
+        self.assertIsNone(maximum(2047)['data']['max_height_mm'])
+        for value in (7, 7, 9):  # Firmware sends max for completed heights 7, 5, 9.
+            sample = maximum(value)
+            self.assertTrue(sample['fresh'])
+            self.assertEqual(sample['data']['max_height_mm'], value)
+            self.assertIsNone(sample['data']['height_mm'])
+        self.now += 3
+        self.assertFalse(self.d.snapshot()['telemetry']['terrain']['fresh'])
+        # New boot has no completed measurement: never retain the old maximum.
+        self.assertIsNone(maximum(2047)['data']['max_height_mm'])
+        self.send('terrain', (9 | (6 << 11)).to_bytes(2, 'little'), retained=True)
+        self.assertIsNone(self.d.snapshot()['telemetry']['terrain']['data']['max_height_mm'])
+        self.assertEqual(maximum(5)['data']['max_height_mm'], 5)
+        self.d.on_disconnect(None, None, None, None, None)
+        self.d.broker_connected = self.d.monitor_ready = True
+        self.assertFalse(self.d.snapshot()['telemetry']['terrain']['fresh'])
+        self.assertTrue(maximum(5)['fresh'])
+
+    def test_maximum_format_rejects_invalid_values_and_padding(self):
+        for word in (2001 | (6 << 11), 9 | (6 << 11) | (1 << 14)):
+            with self.assertRaises(ValueError):
+                decode_telemetry('terrain', word.to_bytes(2, 'little'))
+        legacy = decode_telemetry('terrain', (24 | (3 << 11)).to_bytes(2, 'little'))
+        self.assertIsNone(legacy['max_height_mm'])  # Never relabel latest as maximum.
+
     def test_motion_and_faults(self):
         self.send('motion',motion_packet(4))
         item=self.d.snapshot()['telemetry']['motion']

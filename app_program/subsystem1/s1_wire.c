@@ -63,10 +63,11 @@ int s1_wire_line(unsigned char out[1], unsigned ir, unsigned barcode)
 
 int s1_wire_terrain(unsigned char out[S1_TERRAIN_BYTES], unsigned height_mm)
 {
-    if (!out || height_mm > B4_TERRAIN_HEIGHT_MAX_MM) return 0;
-    /* Reuse the two-byte layout with its phase set to unavailable. */
+    if (!out || (height_mm > B4_TERRAIN_HEIGHT_MAX_MM &&
+                 height_mm != S1_TERRAIN_UNAVAILABLE)) return 0;
+    /* Session maximum, or explicit unavailable before the first valid hump. */
     out[0] = (unsigned char)height_mm;
-    out[1] = (unsigned char)((height_mm >> 8) | (B4_TERRAIN_PHASE_UNAVAILABLE << 3));
+    out[1] = (unsigned char)((height_mm >> 8) | (S1_TERRAIN_MAX_MARKER << 3));
     return 1;
 }
 

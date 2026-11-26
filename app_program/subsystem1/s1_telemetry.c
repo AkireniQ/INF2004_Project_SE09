@@ -71,8 +71,12 @@ void s1_publish_telemetry(void)
         unsigned ir=(s.l>=600?1u:0u)|(s.r>=600?4u:0u);
         account(s1_publish_line(ir,s.barcode));
     }
+    /* Preserve the completed-height FIFO; publish its separate session maximum.
+       Explicit unavailable clears a previous boot's display before any hump. */
+    unsigned maximum = S1_TERRAIN_UNAVAILABLE;
     if(s.terrain_valid && (uint32_t)(s.timestamp_ms-s.terrain_timestamp_ms)<=VC_SENSOR_MAX_AGE_MS)
-        account(s1_publish_terrain(s.height_mm));
+        maximum = s.max_height_mm;
+    account(s1_publish_terrain(maximum));
     publish_obstacle(&s);
 #endif
 }

@@ -132,6 +132,11 @@ def decode_telemetry(kind, payload):
         max_height = None
         if len(payload) == 2:
             phase = bits(11, 3)
+            if phase == 6 and not word >> 14:
+                if height > 2000 and height != 2047:
+                    raise ValueError('Invalid session maximum')
+                return dict(height_mm=None, max_height_mm=None if height == 2047 else height,
+                            phase=3, phase_label='Unavailable')
             if word >> 14 or phase > 5:
                 raise ValueError('Invalid legacy terrain payload')
         else:

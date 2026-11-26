@@ -41,8 +41,10 @@ int main(void)
 
     unsigned char packet[S1_TERRAIN_BYTES];
     assert(s1_wire_terrain(packet, height));
-    assert(packet[0] == 0x16 && packet[1] == 0x18);
+    assert(packet[0] == 0x16 && packet[1] == 0x30);
     assert(!s1_wire_terrain(packet, B4_TERRAIN_HEIGHT_MAX_MM + 1u));
+    assert(s1_wire_terrain(packet, S1_TERRAIN_UNAVAILABLE));
+    assert(packet[0] == 0xff && packet[1] == 0x37);
 
     out.hump_detected = 1;
     for (unsigned i = 0; i < B4_TERRAIN_QUEUE_SIZE; i++) b4_terrain_report_observe(&r, &out, 2300);
