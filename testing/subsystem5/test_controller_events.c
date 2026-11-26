@@ -60,8 +60,6 @@ unsigned s2_core_distance_travelled_mm(const S2_STATUS *status)
 { (void)status; return search_progress; }
 bool s2_core_maneuver_finished(unsigned arg, const S2_STATUS *status)
 { (void)arg; return s2_get_bits(status, 0, 2) == 0; }
-bool s2_core_arc_finished(bool right, const S2_STATUS *status)
-{ (void)right; return s2_get_bits(status, 0, 2) == 0; }
 static unsigned pivot_angle;
 bool s2_core_pivot_reached(unsigned degrees, const S2_STATUS *status)
 { (void)status; return pivot_angle >= degrees; }
@@ -108,13 +106,6 @@ bool motion_maneuver_reverse(unsigned mm, uint16_t *command)
 {
     assert(!queued_command && mm);
     *command = queued_command = (uint16_t)(S2_MANEUVER | ((S2_MANEUVER_REVERSE_BASE + mm) << 4));
-    motor_busy = true;
-    return true;
-}
-bool motion_arc(bool right, uint16_t *command)
-{
-    assert(!queued_command);
-    *command = queued_command = (uint16_t)(S2_ARC | ((unsigned)right << 4));
     motor_busy = true;
     return true;
 }
@@ -168,8 +159,10 @@ static unsigned vehicle_state(void)
 
 static void complete_move(void)
 {
+    unsigned command = queued_command;
     motor_acknowledge(S2_REPLY_OK);
     work();
+    if ((command & 15u) == S2_CRAWL_PIVOT) pivot_angle = command >> 5;
     motor_stopped();
     work();
 }
@@ -580,9 +573,8 @@ int main(void)
     assert(vehicle_request_start());
     assert(work() > 0 && vehicle_state() == VC_AVOIDING && command_count == before_start);
     assert(vehicle_obstacle_scan_request(&request, NULL));
-    /* The scan now sees the target beyond the minimum departure distance. */
     S5_PROFILE saved = {
-        .nearest_mm = 196, .front_mm = 196, .width_mm = 294, .angle_offset_deg = 60,
+        .nearest_mm = 136, .front_mm = 136, .width_mm = 294, .angle_offset_deg = 60,
         .left_path_mm = 208, .right_path_mm = 651, .left_edge_mm = -254, .right_edge_mm = 40,
         .left_edge_valid = true, .right_edge_valid = true,
     };
@@ -594,22 +586,25 @@ int main(void)
     assert(vehicle_obstacle_ranging_paused() && !queued_command);
     assert(vehicle_get_snapshot(&snapshot) && snapshot.obstacle_profile && !snapshot.obstacle_no_echo);
 
+    const unsigned pivot_left = S2_CRAWL_PIVOT | (S5_PIVOT_DEG << 5);
+    const unsigned pivot_right = pivot_left | (1u << 4);
     settle_step();
-    assert(queued_command == (S2_ARC | (1u << 4)));
+    assert(queued_command == pivot_right);
     motor_acknowledge(S2_REPLY_OK);
     work();
     /* A late in-flight ping is dropped even if it would indicate an obstacle. */
     vehicle_submit_obstacle_range(60);
     vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
     assert(!event_flags && !range_valid(clock_ms));
+    pivot_angle = S5_PIVOT_DEG;
     motor_stopped();
     work();
 
     settle_step();
-    assert(model.avoidance.phase == S5_SHIFT_OUT && (queued_command >> 4) == 102);
+    assert(model.avoidance.phase == S5_SHIFT_OUT && (queued_command >> 4) == 175);
     complete_move();
     settle_step();
-    assert(queued_command == S2_ARC);
+    assert(queued_command == pivot_left);
     motor_acknowledge(S2_REPLY_OK);
     work();
     unsigned before_ir_gap = stop_count;
@@ -617,22 +612,24 @@ int main(void)
     vehicle_notify_feedback();
     assert(work() == VC_REFRESH_MS && model.avoidance.phase == S5_ALIGN_OUTSIDE &&
            stop_count == before_ir_gap && motor_busy);
+    pivot_angle = S5_PIVOT_DEG;
     motor_stopped();
     work();
 
     settle_step();
-    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 196 + 162 + 160 - 225);
+    assert(model.avoidance.phase == S5_PASS && (queued_command >> 4) == 136 + 147 + 160);
     complete_move();
     settle_step();
-    assert(model.avoidance.phase == S5_TURN_IN && queued_command == S2_ARC);
+    assert(model.avoidance.phase == S5_TURN_IN && queued_command == pivot_left);
     complete_move();
 
     settle_step();
-    assert(model.avoidance.phase == S5_FIND_LINE && (queued_command >> 4) == 200 + S5_SEARCH_EXTENSION_MM);
+    assert(model.avoidance.phase == S5_FIND_LINE &&
+           (queued_command >> 4) == 175 + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM);
     motor_acknowledge(S2_REPLY_OK);
     work();
     near_tape = true;
-    search_progress = 10;
+    search_progress = 28;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
         vehicle_submit_line(200, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
@@ -640,31 +637,31 @@ int main(void)
     }
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy);
 
-    search_progress = 28;
+    search_progress = 44;
     unsigned stops_before_rejoin = stop_count;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
         vehicle_submit_line(108, 0, 200, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
         work();
     }
-    assert(model.avoidance.align_at_mm == 102);
+    assert(model.avoidance.align_at_mm == 175);
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy && stop_count == stops_before_rejoin);
-    search_progress = 101;
+    search_progress = 174;
     vehicle_notify_feedback();
     work();
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy && stop_count == stops_before_rejoin);
 
-    search_progress = 102;
+    search_progress = 175;
     vehicle_notify_feedback();
     work();
     assert(model.avoidance.phase == S5_CENTER_LINE && !queued_command && stop_count == stops_before_rejoin + 1);
-    search_progress = 103;
+    search_progress = 176;
     motor_stopped();
     work();
     settle_step();
     assert(model.avoidance.phase == S5_ALIGN_LINE && !queued_command);
     settle_step();
-    assert(queued_command == (S2_ARC | (1u << 4)));
+    assert(queued_command == pivot_right);
     complete_move();
     assert(model.avoidance.phase == S5_CHECK_LINE && vehicle_obstacle_ranging_paused());
 

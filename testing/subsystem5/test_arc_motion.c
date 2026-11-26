@@ -140,6 +140,8 @@ int main(void)
     run_straight_maneuver(true);
     run_pivot(false);
     run_pivot(true);
+    run_crawl_pivot(90, false);
+    run_crawl_pivot(90, true);
     run_crawl_pivot(108, false);
     run_crawl_pivot(198, true);
     run_arc(false);
