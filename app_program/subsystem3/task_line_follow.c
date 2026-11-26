@@ -26,8 +26,7 @@ EXPORT void s3_log_sampler_state(void)
 }
 
 
-/* Calibration: raw ADC on white paper and on the black line (L, C, R).
-   Measure on your track before tuning the line thresholds. */
+/* Calibration: raw ADC on white paper and on the black line (L, C, R). */
 LOCAL const INT white_raw[3] = { 130, 130, 130 };
 LOCAL const INT black_raw[3] = { 3200, 3200, 3200 };
 

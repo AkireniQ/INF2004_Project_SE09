@@ -4,7 +4,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Wheel targets use the team's even-RPM Subsystem 2 API. */
 #define S3_CRUISE_RPM 12
 #define S3_EDGE_DARKNESS 160
 #define S3_MAX_OUTER_RPM 14

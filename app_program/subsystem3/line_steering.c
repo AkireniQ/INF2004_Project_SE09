@@ -127,7 +127,6 @@ void line_decide(int left, int center, int right, LF_STATE *state, LF_CMD *comma
     int strong_side = 0;
     if (state->settle_samples > 0u) { --state->settle_samples; }
 
-    /* GP27 belongs to barcode sensing. */
     (void)center;
     if (peak >= CURVE_DARKNESS && absolute(error) >= CURVE_IMBALANCE) {
         strong_side = error < 0 ? -1 : 1;
