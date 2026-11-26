@@ -57,7 +57,7 @@ Subscriptions use the configured root and these suffixes:
 | `motion` |6| mode0:2, level2:3, faults5:4, L RPM9:9, R RPM18:9, L PWM27:7, R PWM34:7 |
 | `line` |1| L/R black bits0/2, barcode bits3..7 (0 none, 1–26 A–Z) |
 | `barcode_map` |3| Active mapping, with left0:5, right5:5, straight10:5, U-turn15:5, and tag `0xA` at 20:4. Letters use 1–26 for A–Z. |
-| `terrain` |2| height0:11. The phase bits use the fixed unavailable marker. |
+| `terrain` |2| Session maximum in bits 0–10 (2047 = unavailable); bits 11–13 = 6 identify the maximum format. No measurement is fabricated before the first valid completed hump. |
 | `obstacle` |2| width0:11 (2047 means unavailable), detection11:2 (0 unavailable, 1 not detected, 2 detected). Reported on change and refreshed once per second. |
 
 The dashboard can also decode older controller, motion, terrain and obstacle packets. It reads the old `sonar` topic for detection when using older firmware. The updated Pico does not publish that topic.
@@ -92,3 +92,10 @@ Use the current dashboard with the Pico firmware. The Commands panel shows the c
 With current firmware and a live command connection, a stopped motor or controller fault enables **Reset fault**. Press it once and wait for the ACK and IDLE state. After a failed detour, put the car back on a straight section of tape before pressing START separately. If a timing fault returns, capture the displayed **Gap / limit** numbers before clearing it.
 
 The command is binary02; accepted RESET ACK04, rejected RESET ACK06. Existing START/STOP bytes are unchanged. Controller diagnostics version2 has31 bytes and adds reset-pending, latched timing gap and limit; older version1/25-byte diagnostics still display but cannot enable RESET. Raw ADC values and total distance remain unreported.
+
+The hump card displays the maximum valid completed height for the processor session,
+not the FIFO's latest completed height. Firmware sends unavailable before the first
+measurement (including after reboot); reception freshness is separate from the age
+of the hump that established the maximum. Update firmware and dashboard together.
+Legacy three-byte reports expose their explicit maximum; legacy two-byte completed
+heights are not displayed as a maximum. The completed-event FIFO is unchanged.

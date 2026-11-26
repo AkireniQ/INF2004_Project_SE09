@@ -156,7 +156,7 @@ def main():
                 fixture.publish(root + "/motion", motion_packet(left=28 + sample % 5, right=22 + sample % 4)).wait_for_publish(timeout=5)
             fixture.publish(root + "/motion", motion_packet(compact=True)).wait_for_publish(timeout=5)
             fixture.publish(root + "/line", bytes([1 | (2 << 3)])).wait_for_publish(timeout=5)
-            fixture.publish(root + "/terrain", (125 | (3 << 11)).to_bytes(2, "little")).wait_for_publish(timeout=5)
+            fixture.publish(root + "/terrain", (125 | (6 << 11)).to_bytes(2, "little")).wait_for_publish(timeout=5)
             fixture.publish(root + "/obstacle", (500 | (80 << 12) | (200 << 23) | (300 << 35)).to_bytes(6, "little")).wait_for_publish(timeout=5)
             fixture.publish(root + "/sonar", (4094).to_bytes(4, "little")).wait_for_publish(timeout=5)
             expect(page.locator("#mission-state")).to_have_text("FOLLOW LINE")
@@ -169,7 +169,7 @@ def main():
             assert int(page.locator("#barcode").evaluate("el => parseFloat(getComputedStyle(el).fontSize)")) >= 52
             expect(page.locator("#terrain-height")).to_have_text("125")
             fixture.publish(root + "/terrain", bytes.fromhex("16 b8 04")).wait_for_publish(timeout=5)
-            expect(page.locator("#terrain-height")).to_have_text("22")
+            expect(page.locator("#terrain-height")).to_have_text("37")
             expect(page.locator("#obstacle-status")).to_have_text("Not detected")
             expect(page.locator("#obstacle-width")).to_have_text("80 mm")
             fixture.publish(root + "/obstacle", bytes.fromhex("ff 17")).wait_for_publish(timeout=5)
