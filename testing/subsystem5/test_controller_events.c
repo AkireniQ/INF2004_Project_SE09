@@ -601,7 +601,7 @@ int main(void)
     work();
 
     settle_step();
-    assert(model.avoidance.phase == S5_SHIFT_OUT && (queued_command >> 4) == 175);
+    assert(model.avoidance.phase == S5_SHIFT_OUT && (queued_command >> 4) == 185);
     complete_move();
     settle_step();
     assert(queued_command == pivot_left);
@@ -625,11 +625,11 @@ int main(void)
 
     settle_step();
     assert(model.avoidance.phase == S5_FIND_LINE &&
-           (queued_command >> 4) == 175 + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM);
+           (queued_command >> 4) == 185 + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM);
     motor_acknowledge(S2_REPLY_OK);
     work();
     near_tape = true;
-    search_progress = 28;
+    search_progress = 38;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
         vehicle_submit_line(200, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
@@ -637,25 +637,25 @@ int main(void)
     }
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy);
 
-    search_progress = 44;
+    search_progress = 54;
     unsigned stops_before_rejoin = stop_count;
     for (unsigned i = 0; i < 2; ++i) {
         clock_ms += 10;
         vehicle_submit_line(108, 0, 200, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
         work();
     }
-    assert(model.avoidance.align_at_mm == 175);
+    assert(model.avoidance.align_at_mm == 185);
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy && stop_count == stops_before_rejoin);
-    search_progress = 174;
+    search_progress = 184;
     vehicle_notify_feedback();
     work();
     assert(model.avoidance.phase == S5_FIND_LINE && motor_busy && stop_count == stops_before_rejoin);
 
-    search_progress = 175;
+    search_progress = 185;
     vehicle_notify_feedback();
     work();
     assert(model.avoidance.phase == S5_CENTER_LINE && !queued_command && stop_count == stops_before_rejoin + 1);
-    search_progress = 176;
+    search_progress = 186;
     motor_stopped();
     work();
     settle_step();
@@ -701,9 +701,9 @@ int main(void)
 
     vehicle_submit_obstacle_range(500);
     assert(!obstacle_blocked());
-    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM + 1);
+    vehicle_submit_obstacle_range(181);
     assert(!obstacle_blocked() && obstacle_range.blocked);
-    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
+    vehicle_submit_obstacle_range(180);
     assert(obstacle_blocked());
     vehicle_submit_obstacle_range(S5_FOLLOW_CLEAR_MM);
     assert(obstacle_blocked());
@@ -781,7 +781,7 @@ int main(void)
     assert(!queued_command);
     vehicle_submit_obstacle_range(600);
     work();
-    assert((queued_command >> 4) == 185 && vehicle_obstacle_ranging_paused());
+    assert((queued_command >> 4) == 195 && vehicle_obstacle_ranging_paused());
     assert(!range_valid(clock_ms)); /* The left-facing reading cannot leak into the next heading. */
 
     puts("PASS missing echo does not start a scan, close echo stops before scanning, and bypass preserves STOP");

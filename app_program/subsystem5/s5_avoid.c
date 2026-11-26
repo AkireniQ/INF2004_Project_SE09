@@ -3,6 +3,7 @@
 #include "../subsystem3/line_steering.h"
 
 #define FRONT_MARGIN_MM 15u
+#define S5_SIDE_EXTRA_MM 10u
 #define MAX_LATERAL_OFFSET_MM 400u
 #define MOTION_SETTLE_MS 260u
 #define LEFT_CHECK_TIMEOUT_MS 1500u
@@ -82,10 +83,12 @@ void s5_avoid_begin(S5_AVOID *state, uint32_t now)
     *state = (S5_AVOID){.phase = S5_PROFILE_PATH, .phase_at = now};
 }
 
-static unsigned reentry_detection_mm(unsigned offset_mm)
+static void set_bypass_offset(S5_AVOID *state, unsigned offset_mm)
 {
     unsigned margin = S5_IR_TO_AXLE_MM + TAPE_HALF_WIDTH_MM + S5_SEARCH_MARGIN_MM;
-    return offset_mm > margin ? offset_mm - margin : 0u;
+    state->offset_mm = offset_mm;
+    state->search_mm = offset_mm + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM;
+    state->search_after_mm = offset_mm > margin ? offset_mm - margin : 0u;
 }
 
 bool s5_avoid_executing(S5_PHASE phase)
@@ -165,6 +168,12 @@ static bool outward_route_fits(unsigned heading, unsigned outward, unsigned offs
            outward >= (lateral_room * 1000u + 865u) / 866u;
 }
 
+static bool side_route_fits(unsigned heading, unsigned path, unsigned outward, unsigned offset)
+{
+    return (s5_range_available(path) && path >= required_side_range(offset)) ||
+           outward_route_fits(heading, outward, offset);
+}
+
 unsigned s5_scan_range_limit(const S5_AVOID *state)
 {
     unsigned extra = state->scan_after_retrace ?
@@ -192,10 +201,8 @@ S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm)
     unsigned right_path = side_range(profile->right_path_mm, profile->right_mm, right_required);
     bool left_room = !profile->left_clipped && left_offset <= MAX_LATERAL_OFFSET_MM;
     bool right_room = !profile->right_clipped && right_offset <= MAX_LATERAL_OFFSET_MM;
-    bool left = left_room && ((s5_range_available(left_path) && left_path >= left_required) ||
-                              outward_route_fits(profile->left_path_mm, profile->left_outward_mm, left_offset));
-    bool right = right_room && ((s5_range_available(right_path) && right_path >= right_required) ||
-                                outward_route_fits(profile->right_path_mm, profile->right_outward_mm, right_offset));
+    bool left = left_room && side_route_fits(profile->left_path_mm, left_path, profile->left_outward_mm, left_offset);
+    bool right = right_room && side_route_fits(profile->right_path_mm, right_path, profile->right_outward_mm, right_offset);
     if (!left && !right) {
         bool left_unobserved = !outward_observed(profile->left_outward_mm);
         bool right_unobserved = !outward_observed(profile->right_outward_mm);
@@ -216,6 +223,12 @@ S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm)
     plan.side = use_left ? S5_LEFT : S5_RIGHT;
     plan.failure = S5_FAIL_NONE;
     plan.offset_mm = use_left ? left_offset : right_offset;
+    unsigned wider = plan.offset_mm + S5_SIDE_EXTRA_MM;
+    unsigned heading = use_left ? profile->left_path_mm : profile->right_path_mm;
+    unsigned path = use_left ? left_path : right_path;
+    unsigned outward = use_left ? profile->left_outward_mm : profile->right_outward_mm;
+    if (wider <= MAX_LATERAL_OFFSET_MM && side_route_fits(heading, path, outward, wider))
+        plan.offset_mm = wider;
     return plan;
 }
 
@@ -350,6 +363,9 @@ static S5_AVOID_OUTPUT execute_route(S5_AVOID *state, const S5_AVOID_INPUT *in, 
             !at_or_after(in->range_at, state->phase_at + MOTION_SETTLE_MS)) return wait;
         if (in->range_mm < required_lateral_room(state->offset_mm))
             return fail(state, S5_FAIL_CLOSE, in->now);
+        unsigned wider = state->offset_mm + S5_SIDE_EXTRA_MM;
+        if (wider <= MAX_LATERAL_OFFSET_MM && in->range_mm >= required_lateral_room(wider))
+            set_bypass_offset(state, wider);
         state->check_left = false;
     }
 
@@ -468,15 +484,12 @@ S5_AVOID_OUTPUT s5_avoid_step(S5_AVOID *state, const S5_AVOID_INPUT *in)
         if (plan.side != S5_NO_SIDE) {
             unsigned pass = s5_planned_pass_mm(&profile, range_fresh ? in->range_mm : S5_UNKNOWN_RANGE);
             if (pass > S5_MAX_PASS_MM) return wait_for_path(state, S5_FAIL_ROOM, in);
-            unsigned offset = plan.offset_mm;
             clear_path_failure(state);
             state->side = plan.side;
             state->check_left = check_left;
-            state->offset_mm = offset;
+            set_bypass_offset(state, plan.offset_mm);
             /* The sideways leg and pivots make no forward progress along the tape. */
             state->pass_mm = pass;
-            state->search_mm = offset + S5_SEARCH_MARGIN_MM + S5_SEARCH_EXTENSION_MM;
-            state->search_after_mm = reentry_detection_mm(offset);
             return go(state, S5_TURN_OUT, in->now);
         }
         S5_FAILURE reason = plan.failure;
