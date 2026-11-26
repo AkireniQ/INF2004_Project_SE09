@@ -539,7 +539,7 @@ int main(void)
     work();
     motor_acknowledge(S2_REPLY_OK);
     work();
-    vehicle_submit_obstacle_range(208);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     work();
     motor_stopped();
     work();
@@ -550,6 +550,8 @@ int main(void)
                              .left_path_mm = 80, .right_path_mm = S5_UNKNOWN_RANGE};
     uint32_t first_request = request;
     clock_ms += 20;
+    /* The target moved slightly farther away after the stop. */
+    vehicle_submit_obstacle_range(208);
     vehicle_finish_obstacle_scan(&unresolved, request);
     assert(work() > 0 && vehicle_obstacle_scan_request(&request, NULL) && request != first_request);
     clock_ms += 20;
@@ -573,11 +575,12 @@ int main(void)
            snapshot.avoidance_failure == S5_FAIL_NONE && !snapshot.reset_pending);
     /* START with a close obstacle requests avoidance directly from standstill. */
     vehicle_submit_line(108, 0, 26, 30, 30, FALSE, 0, BARCODE_SCAN_IDLE);
-    vehicle_submit_obstacle_range(208);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     unsigned before_start = command_count;
     assert(vehicle_request_start());
     assert(work() > 0 && vehicle_state() == VC_AVOIDING && command_count == before_start);
     assert(vehicle_obstacle_scan_request(&request, NULL));
+    /* The scan now sees the target beyond the minimum departure distance. */
     S5_PROFILE saved = {
         .nearest_mm = 196, .front_mm = 196, .width_mm = 294, .angle_offset_deg = 60,
         .left_path_mm = 208, .right_path_mm = 651, .left_edge_mm = -254, .right_edge_mm = 40,
@@ -739,9 +742,9 @@ int main(void)
     motor_stopped();
     work();
     model = (VC_MODEL){.state = VC_AVOIDING, .avoidance = {
-        .phase = S5_WAIT_PATH, .phase_at = clock_ms, .scan_retried = true, .blocked_range_mm = 200,
+        .phase = S5_WAIT_PATH, .phase_at = clock_ms, .scan_retried = true, .blocked_range_mm = S5_FOLLOW_STOP_MM,
     }};
-    vehicle_submit_obstacle_range(200);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     work();
     scans_before = scan_count;
     vehicle_submit_obstacle_ping(s5_classify_echo(S5_ECHO_FALL_TIMEOUT, 0));
@@ -751,7 +754,7 @@ int main(void)
     assert(vehicle_request_start());
     work();
     assert(model.avoidance.phase == S5_WAIT_PATH && scan_count == scans_before && !queued_command);
-    vehicle_submit_obstacle_range(200);
+    vehicle_submit_obstacle_range(S5_FOLLOW_STOP_MM);
     work();
     assert(vehicle_request_start());
     work();

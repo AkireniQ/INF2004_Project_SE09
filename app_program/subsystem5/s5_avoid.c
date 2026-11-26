@@ -189,6 +189,12 @@ S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm)
     S5_BYPASS plan = {.failure = S5_FAIL_TARGET};
     if (!s5_range_measured(profile->nearest_mm) || profile->nearest_mm > limit_mm)
         return plan;
+    /* Verify departure room before checking the sides. A fresh scan after a
+       retrace can evaluate side clearance from farther back. */
+    if (profile->front_mm < ARC_ENTRY_MM) {
+        plan.failure = S5_FAIL_ROOM;
+        return plan;
+    }
 
     unsigned left_offset = bypass_offset(-profile->left_edge_mm, profile->left_edge_valid);
     unsigned right_offset = bypass_offset(profile->right_edge_mm, profile->right_edge_valid);
@@ -205,10 +211,8 @@ S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm)
     if (!left && !right) {
         bool left_unobserved = !outward_observed(profile->left_outward_mm);
         bool right_unobserved = !outward_observed(profile->right_outward_mm);
-        if (profile->front_mm >= ARC_ENTRY_MM) {
-            plan.probe_left = left_room && left_unobserved && outward_probe_allowed(profile->left_path_mm, left_offset);
-            plan.probe_right = right_room && right_unobserved && outward_probe_allowed(profile->right_path_mm, right_offset);
-        }
+        plan.probe_left = left_room && left_unobserved && outward_probe_allowed(profile->left_path_mm, left_offset);
+        plan.probe_right = right_room && right_unobserved && outward_probe_allowed(profile->right_path_mm, right_offset);
         if ((left_room && !s5_range_available(left_path) && left_unobserved) ||
             (right_room && !s5_range_available(right_path) && right_unobserved)) plan.failure = S5_FAIL_ECHO;
         else if (profile->left_clipped && profile->right_clipped) plan.failure = S5_FAIL_BOTH_LIMITS;
@@ -217,11 +221,6 @@ S5_BYPASS s5_plan_bypass_at_range(const S5_PROFILE *profile, unsigned limit_mm)
         else plan.failure = left_room || right_room ? S5_FAIL_SIDE : S5_FAIL_ROOM;
         return plan;
     }
-    if (profile->front_mm < ARC_ENTRY_MM) {
-        plan.failure = S5_FAIL_ROOM;
-        return plan;
-    }
-
     /* Use right when both routes fit unless the measured left route is shorter. */
     bool shorter_left = left && profile->left_edge_valid && profile->right_edge_valid &&
                         left_offset + EDGE_OFFSET_DEADBAND_MM < right_offset;

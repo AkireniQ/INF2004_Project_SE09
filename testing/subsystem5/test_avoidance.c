@@ -36,7 +36,7 @@ static void profile(VC_MODEL *model, VC_INPUT *in, VC_OUTPUT *out, S5_PROFILE sc
     assert(s5_accept_range(&gate, S5_CLEAR_MM) && gate.blocked);
     assert(s5_accept_range(&gate, S5_CLEAR_MM + 1) && !gate.blocked);
     in->obstacle_blocked = true;
-    in->avoidance.range_mm = scan.nearest_mm > S5_SCAN_STOP_MM ? scan.nearest_mm : S5_SCAN_STOP_MM;
+    in->avoidance.range_mm = scan.nearest_mm > S5_FOLLOW_STOP_MM ? scan.nearest_mm : S5_FOLLOW_STOP_MM;
     step(model, in, out, 20);
     assert(out->stop && model->state == VC_AVOIDING && model->avoidance.phase == S5_PROFILE_PATH);
 
@@ -829,9 +829,10 @@ static void test_rounded_bypass(bool left)
     VC_INPUT in = track_input();
     VC_OUTPUT out;
     S5_PROFILE scan = obstacle(left);
-    /* Confirm four rolling turns and one encoder-measured pass in either direction. */
-    scan.nearest_mm = S5_FOLLOW_STOP_MM;
-    scan.front_mm = S5_FOLLOW_STOP_MM;
+    /* Start at the scan threshold and confirm the rounded bypass after retracing. */
+    unsigned reverse_mm = left ? S5_REVERSE_MM : S5_LONG_REVERSE_MM;
+    scan.nearest_mm = S5_FOLLOW_STOP_MM + reverse_mm;
+    scan.front_mm = scan.nearest_mm;
     scan.width_mm = 200;
     scan.left_edge_mm = -100;
     scan.right_edge_mm = 100;
@@ -842,10 +843,25 @@ static void test_rounded_bypass(bool left)
     }
     S5_BYPASS plan = s5_plan_bypass(&scan);
     assert(plan.offset_mm == 100 + S5_SIDE_ALLOWANCE_MM);
-    profile(&model, &in, &out, scan);
+    S5_PROFILE close = scan;
+    close.front_mm = close.nearest_mm = S5_FOLLOW_STOP_MM;
+    close.left_path_mm = close.right_path_mm = S5_UNKNOWN_RANGE;
+    close.left_outward_mm = close.right_outward_mm = S5_UNKNOWN_RANGE;
+    in.avoidance.line_centered = true;
+    in.avoidance.can_retrace = true;
+    in.avoidance.can_retrace_far = !left;
+    profile(&model, &in, &out, close);
+    assert(model.avoidance.phase == S5_BACK_UP);
+    start_move(&model, &in, &out, S5_REVERSE, reverse_mm);
+    end_move(&model, &in, &out);
+    assert(model.avoidance.phase == S5_PROFILE_PATH);
+    in.avoidance.profile = scan;
+    in.avoidance.range_mm = scan.nearest_mm;
+    in.avoidance.profile_at = in.avoidance.now + 2000;
+    step(&model, &in, &out, 2000);
+    assert(model.avoidance.phase == S5_TURN_OUT);
     S5_ACTION outward = left ? S5_ARC_LEFT : S5_ARC_RIGHT;
     S5_ACTION inward = left ? S5_ARC_RIGHT : S5_ARC_LEFT;
-    in.avoidance.range_mm = S5_FOLLOW_STOP_MM;
     start_move(&model, &in, &out, outward, 0);
     end_move(&model, &in, &out);
     in.avoidance.range_mm = S5_OPEN_RANGE;
@@ -854,8 +870,9 @@ static void test_rounded_bypass(bool left)
     end_move(&model, &in, &out);
     start_move(&model, &in, &out, inward, 0);
     end_move(&model, &in, &out);
-    assert(model.avoidance.offset_mm == plan.offset_mm && model.avoidance.pass_mm == 510 - 252);
-    start_move(&model, &in, &out, S5_ADVANCE, 510 - 252);
+    unsigned expected_pass_mm = scan.nearest_mm + 110 + 160 - 252;
+    assert(model.avoidance.offset_mm == plan.offset_mm && model.avoidance.pass_mm == expected_pass_mm);
+    start_move(&model, &in, &out, S5_ADVANCE, expected_pass_mm);
     assert(model.avoidance.phase == S5_PASS);
     end_move(&model, &in, &out);
     assert(model.avoidance.phase == S5_TURN_IN);
